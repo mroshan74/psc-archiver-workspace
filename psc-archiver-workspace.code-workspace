@@ -5,13 +5,13 @@
 			"name": "workspace-root"
 		},
 		{
-			"path": "psc-archiver-admin"
+			"path": "psc-archiver-deploy"
 		},
 		{
 			"path": "psc-archiver-api"
 		},
 		{
-			"path": "psc-archiver-deploy"
+			"path": "psc-archiver-admin"
 		}
 	]
 }
