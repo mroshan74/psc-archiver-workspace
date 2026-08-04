@@ -16,12 +16,12 @@ Guidance for Claude Code launched from the **workspace root**. This multi-root V
 
 ## Cloning / syncing every repo in one go
 
-This workspace root is its own lightweight git repo (`github.com/mroshan74/psc-archiver`) that tracks only meta files — docs, workspace/editor config, and the sync tooling below. It never tracks the contents of `psc-archiver-api/`, `psc-archiver-admin/`, or `psc-archiver-deploy/` (see `.gitignore`); each of those stays a fully independent repo with its own remote, branch, and history.
+This workspace root is its own lightweight git repo (`github.com/mroshan74/psc-archiver-workspace`) that tracks only meta files — docs, workspace/editor config, and the sync tooling below. It never tracks the contents of `psc-archiver-api/`, `psc-archiver-admin/`, or `psc-archiver-deploy/` (see `.gitignore`); each of those stays a fully independent repo with its own remote, branch, and history.
 
 - [repos.json](repos.json) — manifest of the three repos (name, clone URL, branch).
-- [sync.ps1](sync.ps1) — run `.\sync.ps1` to clone whichever of the three repos are missing and `git pull --ff-only` whichever already exist, in one command. It never merges or overwrites local work — a repo with diverging or uncommitted changes is left alone and flagged in the summary.
+- [sync.sh](sync.sh) — run `bash sync.sh` to clone whichever of the three repos are missing and `git pull --ff-only` whichever already exist, in one command. Plain bash (no jq/node dependency) so it runs unmodified on Windows (Git Bash), macOS, and Linux. It never merges or overwrites local work — a repo with diverging or uncommitted changes is left alone and flagged in the summary.
 
-On a fresh machine: clone this root repo, then run `.\sync.ps1` from it to pull down all three app repos.
+On a fresh machine: clone this root repo, then run `bash sync.sh` from it to pull down all three app repos.
 
 ## Run the full stack
 
