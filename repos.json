@@ -1,0 +1,7 @@
+{
+  "repos": [
+    { "name": "psc-archiver-api",    "url": "https://github.com/mroshan74/psc-archiver-api.git",    "branch": "master" },
+    { "name": "psc-archiver-admin",  "url": "https://github.com/mroshan74/psc-archiver-admin.git",  "branch": "master" },
+    { "name": "psc-archiver-deploy", "url": "https://github.com/mroshan74/psc-archiver-deploy.git", "branch": "main" }
+  ]
+}

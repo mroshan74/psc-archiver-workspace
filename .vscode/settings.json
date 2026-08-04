@@ -1,0 +1,7 @@
+{
+  "files.exclude": {
+    "psc-archiver-admin": true,
+    "psc-archiver-api": true,
+    "psc-archiver-deploy": true
+  }
+}
