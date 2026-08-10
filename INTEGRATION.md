@@ -17,9 +17,9 @@ The two repos are one product:
 development (cross-origin)
   psc-archiver-admin  ──HTTP──▶  psc-archiver-api
     Vite dev @ :5173               NestJS @ :5000, global prefix /api
-    xior baseURL =                 exposes GET /api/config
-      VITE_BACKEND_URL + "/api"       (enums + permission registry,
-      (= http://localhost:5000/api)    public, read-only)
+    xior baseURL =                 GET /api/config             (public,  enums)
+      VITE_BACKEND_URL + "/api"    GET /api/config/permissions (auth,    registry)
+      (= http://localhost:5000/api)
 
 production (same-origin — one hostname, one certificate)
   browser ──HTTPS──▶ traefik ──▶ web (nginx)  ── SPA
@@ -30,17 +30,27 @@ production (same-origin — one hostname, one certificate)
 
 - Backend port: **`PORT=5000`** ([psc-archiver-api/.env](psc-archiver-api/.env)), global prefix **`/api`**.
 - Frontend base URL: **`VITE_BACKEND_URL + "/api"`** — `VITE_BACKEND_URL=http://localhost:5000` in [psc-archiver-admin/.env.development](psc-archiver-admin/.env.development). HTTP client is `xior` (fetch-based) at [src/services/configs/xior.js](psc-archiver-admin/src/services/configs/xior.js); all path strings live in [src/services/configs/apiPaths.js](psc-archiver-admin/src/services/configs/apiPaths.js).
-- **`GET /api/config`** is the handshake: the backend publishes its enums + permission registry there, and the frontend reads them instead of keeping parallel constant maps. See [decision 0010](psc-archiver-api/doc/decisions/0010-config-endpoint-as-source-of-truth.md).
+- **The handshake has two halves, with two different mechanisms.** This is deliberate, not an unfinished migration:
 
-> ⚠ **Current state vs target (August 2026):** the handshake is only half-built. The backend's `/api/config` returns **enums only** (no `permissions: { list, roleDefaults }` yet), and the frontend **does not call the endpoint at all** — the path is not even in `apiPaths.js`. It hardcodes copies in two files, and **they hold different halves**:
-> - `psc-archiver-admin/src/lib/enums.js` — **content enums only.** No roles, no permissions.
-> - `psc-archiver-admin/src/pages/user-management/data/constants.js` — **the whole role and permission registry**: `ROLE_META`, `PRIMARY_ROLE_OPTIONS`, `ASSIGNABLE_ROLE_OPTIONS`, `PERMISSION_GROUPS`, `ALL_PERMS`, and a hand-maintained copy of `ROLE_DEFAULT_PERMISSIONS`.
+| What | Mechanism | Frontend copy? |
+|---|---|---|
+| **Permission registry** (`list`, `roleDefaults`) | `GET /api/config/permissions` — **authenticated**, fetched at runtime via `usePermissionRegistry()` | **None.** Deleted. |
+| **Enums** | `GET /api/config` — public. The frontend keeps `src/lib/enums.js` and verifies it with **`pnpm check:drift`** | Yes, by design |
+| **A user's own access** | `GET /api/users/me/permissions` | Cached in the auth store |
+
+See [decision 0010](psc-archiver-api/doc/decisions/0010-config-endpoint-as-source-of-truth.md) and [decision 0026](psc-archiver-api/doc/decisions/0026-permission-registry-endpoint.md).
+
+> **Why enums are not fetched.** ~50 frontend files compare against them with `===`. A runtime value that arrives late or missing turns `status === QUESTION_STATUS.PUBLISHED` into a silently dead branch — worse than a stale label, which is at least visible. And several frontend option lists are deliberate curated subsets (`PRIMARY_ROLE_OPTIONS` drops `superadmin`, `SELECTABLE_PAPER_CATEGORY_OPTIONS` drops `exam_copy`, `QUESTION_SORT_OPTIONS` drops `recentlyVerified`) that deriving from config would silently un-filter. **`/api/config` is a validation universe, not a UI menu.** So the copy stays and a build-time diff keeps it honest.
 >
-> Anything about permissions belongs to the second file. Four known drifts today: the frontend is missing the `for_tagging` classification status; it invents `question:bulk-import-formula`, unknown to the backend registry; it omits `seeder:run` from its registry while using it as a route and nav gate, so the permission cannot be granted through the permission editor; and it omits `ai-tagging:open-folder`. Closing this loop is the highest-leverage cross-repo task. Until then, any enum/permission change must be manually mirrored on both sides in the same change. See [psc-archiver-admin/docs/roadmaps/multi-tenant-organization.md](psc-archiver-admin/docs/roadmaps/multi-tenant-organization.md) items 1.18, 7.3 and 7.4.
+> **Why the registry is fetched.** It is pure data — nothing branches on `PERM.FOO`. Groups derive from the `resource` half of `resource:action`, so a permission added to `src/common/permissions.ts` reaches the access editor with **no frontend change**. And the editor previews what a user *would* inherit under an unsaved draft role, a question no per-user endpoint can answer.
+>
+> **Resolved (August 2026):** all four drifts are closed — `question:bulk-import-formula` is registered in the backend (granting it previously returned a 400), `seeder:run` and `ai-tagging:open-folder` now reach the editor, and `for_tagging` is present. A stray `kas_level`, in no backend enum at all, was removed.
 
 > **Paper type / category sync (done):** `examType` was narrowed from four values to two — `exam_paper` | `custom_paper` — and a new **`paperCategory`** enum (`practice`, `quiz`, `current_affairs`, `exam_copy`) was added for what a builder paper is *for*. Both are published in `/api/config` (`examTypes`, `paperCategory`) and mirrored in [psc-archiver-admin/src/lib/enums.js](psc-archiver-admin/src/lib/enums.js) as `EXAM_TYPE` / `PAPER_CATEGORY` in the same change. `category` is optional with **no schema default**, so seeding and real-paper ingest were untouched and no migration was needed — but that also means the narrowed `examTypeSchema` will reject any pre-existing `practice_paper` / `mock_exam` row on read. See [psc-archiver-api/doc/decisions/0023-paper-type-vs-category.md](psc-archiver-api/doc/decisions/0023-paper-type-vs-category.md) and [psc-archiver-admin/docs/features/paper-builder.md](psc-archiver-admin/docs/features/paper-builder.md).
 
 > **Delete-framework sync (done):** the unified delete framework added `exam-paper:restore` and `question:purge` / `user:purge` / `exam-paper:purge` to the backend registry ([src/common/permissions.ts](psc-archiver-api/src/common/permissions.ts)) and mirrored them in the frontend registry ([user-management/data/constants.js](psc-archiver-admin/src/pages/user-management/data/constants.js)) in the same change. `*:purge` is superadmin-only (in no role default). See [psc-archiver-api/doc/decisions/0019-soft-delete-plugin.md](psc-archiver-api/doc/decisions/0019-soft-delete-plugin.md) and [psc-archiver-admin/docs/features/delete-framework.md](psc-archiver-admin/docs/features/delete-framework.md).
+
+> **Global paper defaults (done):** a new `app-settings` key `paper-defaults` stores workspace-wide default values for editor layout, typography, watermark, and export page size. `GET /api/app-settings/paper-defaults` is ungated; `PUT /api/app-settings/paper-defaults` requires `settings:manage`. The frontend merges these defaults into every loaded paper underneath per-paper saved settings and above the hardcoded `DEFAULT_PAPER` fallback. See [psc-archiver-admin/docs/features/settings.md](psc-archiver-admin/docs/features/settings.md).
 
 ---
 
@@ -56,8 +66,8 @@ When a feature touches both sides, **agree on the contract before writing either
 
 | Seam | Backend does | Frontend does |
 |------|--------------|---------------|
-| **1. Enums** | Add a four-export Zod-first block in [src/common/enums.ts](psc-archiver-api/src/common/enums.ts) and wire it into `/api/config` ([app-config.service.ts](psc-archiver-api/src/app-config/app-config.service.ts) + [get-config.dto.ts](psc-archiver-api/src/app-config/dto/get-config.dto.ts)). | Read the values from config — do **not** re-declare a parallel constant list. |
-| **2. Permissions / RBAC** | Register each `resource:action` in [src/common/permissions.ts](psc-archiver-api/src/common/permissions.ts) and gate routes with `@RequirePermissions(PERMISSIONS.X)`. | Gate UI (routes, buttons, menus) on the user's effective permission set from config. |
+| **1. Enums** | Add a four-export Zod-first block in [src/common/enums.ts](psc-archiver-api/src/common/enums.ts) and wire it into `/api/config` ([app-config.service.ts](psc-archiver-api/src/app-config/app-config.service.ts) + [get-config.dto.ts](psc-archiver-api/src/app-config/dto/get-config.dto.ts)). | Mirror it in [src/lib/enums.js](psc-archiver-admin/src/lib/enums.js) + a label in [options.js](psc-archiver-admin/src/lib/options.js), then run **`pnpm check:drift`**. A deliberate subset goes in `scripts/drift-manifest.mjs` with a reason. |
+| **2. Permissions / RBAC** | Register each `resource:action` in [src/common/permissions.ts](psc-archiver-api/src/common/permissions.ts), decide its role defaults, and gate routes with `@RequirePermissions(PERMISSIONS.X)`. **No config wiring needed** — the registry is served from `PERMISSIONS_LIST` directly. | Nothing to mirror. It appears in the access editor automatically. Gate UI on `useHasAccess()`, which reads the effective set. |
 | **3. Endpoints** | Every route ships a request **and** response DTO (`createZodDto`). | Add the path to `API_PATHS` ([apiPaths.js](psc-archiver-admin/src/services/configs/apiPaths.js)) + a function under [src/services/apis/](psc-archiver-admin/src/services/apis/). Never inline URL strings. |
 | **4. User-facing copy** | Returns data + mechanisms (schema fields, status codes). | Translates to plain business language — no schema jargon in UI. See [docs/arch/12-user-facing-copy.md](psc-archiver-admin/docs/arch/12-user-facing-copy.md). |
 
@@ -81,8 +91,11 @@ Each note should name: the endpoint(s), the DTO/enum/permission changes, and whi
 ## Known contract quirks (don't get caught by these)
 
 - **Port is 5000, not 3000.** The code default is 3000, but [.env](psc-archiver-api/.env) sets `PORT=5000` and the frontend targets 5000. Trust 5000. Swagger UI: `http://localhost:5000/api/docs`.
-- **`/api/config` is public + read-only — and currently enums-only.** It's the enum registry, not a settings-write surface; the permission registry is not in the response yet, and the frontend doesn't consume the endpoint yet (see the "Current state vs target" note above).
-- **Effective permissions come from the login response / `GET /api/users/me/permissions`,** not from `/api/config`. The frontend gates UI on `user.permissions` persisted in its auth store.
+- **`/api/config` is public; `/api/config/permissions` is not.** The enum payload is anonymous-readable; the permission registry needs a token because it enumerates every capability the system has — the same reason Swagger is off in production. Neither is a settings-write surface.
+- **Three different things are called "permissions." Don't mix them up.**
+  - `GET /api/config/permissions` → the **static registry** (what exists, what each role grants by default).
+  - `GET /api/users/me/permissions` → the signed-in user's **effective set**. **This is what gates the UI.**
+  - `user.permissions` on `GET /users/me` and in the JWT → the raw **override layer** (bare grants, `!`-prefixed revokes). Empty for most users. Gating on it hides every action a writer or reviewer owns, because their access comes from role defaults. The frontend edits this field in the access editor and gates on nothing else.
 - **Guard style on the backend is mostly `@RequirePermissions` now.** Users, Questions, AiTagging, ExamPapers, and Taxonomy routes use permission gates; a few status-only routes (e.g. paper publish via `PATCH { status }`) still do not require `EXAM_PAPER_PUBLISH`. `SETTINGS_MANAGE` is enforced by `PUT /api/app-settings/export-licence` and is in the `admin` defaults. The remaining unenforced registered permissions are for future modules (`REPORTS_EXPORT`, `AUDIT_LOG_READ`). See [psc-archiver-api/doc/07-future-work.md](psc-archiver-api/doc/07-future-work.md).
 - **Auth is plaintext-by-default + `mustChangePassword`.** Passwords are stored plaintext until the user changes them; only `POST /api/users/me/change-password` hashes. The login response carries `mustChangePassword`; the JWT does not. Frontend must honor the first-login change-password flow.
 - **Admin URLs use the Mongo `_id`** (the `id` virtual / ObjectId hex), e.g. `GET /api/users/:id` — not `shareId`/`registrationId`.
@@ -188,6 +201,50 @@ Three contract details worth carrying forward:
 
 See [decision 0025](psc-archiver-api/doc/decisions/0025-app-settings-store.md) for
 why this is a new module rather than a field on `/api/config`.
+
+## Recent seam changes (phone-friendly export edition)
+
+Every download surface can now produce a second *edition* of the same paper on
+narrow 420 × 747pt pages, for learners reading on a handset. The seam is small
+and additive — the rendering stayed entirely in the browser.
+
+1. **Enum — one new four-export block.** `paperExportProfileSchema` =
+   `print | mobile` in [enums.ts](psc-archiver-api/src/common/enums.ts), exposed
+   as `paperExportProfiles` on `GET /api/config`, mirrored in the frontend's
+   `src/lib/enums.js` as `PAPER_EXPORT_PROFILE`, and registered in
+   `scripts/drift-manifest.mjs` so `pnpm check:drift` covers it.
+
+   It is **orthogonal to `paperExportMode`**, not an extension of it: the mode is
+   *what goes in the file* (paper / key / both), the profile is *what shape it
+   comes out*. Conflating them would have turned three menu items into six.
+2. **Permission** — none. Anyone who can export a paper can export either
+   edition.
+3. **Endpoint** — no new route. `POST /api/exam-papers/:id/downloads` gained an
+   optional `profile` field, and the `ExamPaperDownload` schema an optional
+   `profile` prop defaulting to `print`.
+
+   **Optional is deliberate, on both sides.** This log is append-only, so rows
+   written before the phone edition have nothing to backfill; and the file is
+   already on the user's disk by the time the record is posted, so a client that
+   forgets to send `profile` must get its row written, not a 400.
+4. **Copy translations** — `Phone-friendly paper` (the row-menu and editor item),
+   `Page size` with `A4 — for printing` / `Phone-friendly — narrow pages` (the
+   batch modal), and `Phone-friendly` in Download History. "Profile", "export
+   profile" and "mobile" are all avoided as jargon or ambiguous.
+
+Two contract details worth carrying forward:
+
+- **The profile is a download-time argument, never a saved paper field.** The
+  same paper must export as both A4 and phone without the user flipping a
+  setting. The frontend applies it as a pure `withExportProfile(paper, profile)`
+  reshape at its single render gate; the result is render-only and never
+  round-trips to `PUT /:id/editor-document`. The backend's editor-settings schema
+  is `.passthrough()`, so nothing server-side would catch it if that rule were
+  broken — the guards are all on the client
+  ([09-known-limitations.md](psc-archiver-admin/docs/arch/09-known-limitations.md)).
+- **Still no PDF work on the server.** The phone edition is a different page size
+  and layout computed in the browser, exactly like A4. The backend's only new
+  knowledge is which edition a given trace code refers to.
 
 ## Deployment — the third repo, and why the origin model flips
 

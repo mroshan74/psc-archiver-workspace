@@ -12,6 +12,9 @@
 		},
 		{
 			"path": "psc-archiver-admin"
+		},
+		{
+			"path": "psc-archiver-client"
 		}
 	]
 }
