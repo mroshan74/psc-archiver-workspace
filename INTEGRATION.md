@@ -1,13 +1,18 @@
 # Integration Contract — psc-archiver
 
-**This is the single source of truth for the seam between the two repos.** The root `AGENTS.md`/`CLAUDE.md` and every sub-project "Sibling project" section link here. When a change spans both the frontend and the backend, read this file first.
+**This is the single source of truth for the seams between the repos.** The root `AGENTS.md`/`CLAUDE.md` and every sub-project "Sibling project" section link here. When a change spans a frontend and the backend, read this file first.
 
-The two repos are one product:
+**One API, two frontends.** They serve different audiences over different route prefixes and are never interchangeable:
 
 | Repo | Role | Stack | Governs itself via |
 |------|------|-------|--------------------|
 | `psc-archiver-api` | Backend (owns data + rules) | NestJS 11 + MongoDB, pnpm, Zod-first DTOs, hybrid RBAC | [psc-archiver-api/CLAUDE.md](psc-archiver-api/CLAUDE.md) |
-| `psc-archiver-admin` | Frontend (consumes the API) | Vite + React/JSX, pnpm, shadcn, Datadog-style UI | [psc-archiver-admin/CLAUDE.md](psc-archiver-admin/CLAUDE.md) |
+| `psc-archiver-admin` | **Staff** frontend — the back office | Vite + React/JSX, pnpm, shadcn, Datadog-style UI | [psc-archiver-admin/CLAUDE.md](psc-archiver-admin/CLAUDE.md) |
+| `psc-archiver-client` | **Learner** frontend — mobile-first, sign in by phone, download a traced paper | Vite + React/JSX, pnpm, shadcn, mobile-first light-only UI | [psc-archiver-client/CLAUDE.md](psc-archiver-client/CLAUDE.md) |
+
+> **The two frontends do not share a surface.** The admin calls `/api/exam-papers/*` and `/api/questions/*` behind `exam-paper:*` / `question:*` permissions; the client calls `/api/papers/*` behind `paper:read` / `paper:download` and can reach nothing else. That split is the reason one stray field on an admin response DTO cannot arrive on a learner's phone — so **never add a consumer route to the admin controller**, and never hand a consumer an admin response DTO. See [decision 0031](psc-archiver-api/doc/decisions/0031-server-minted-trace-code.md).
+>
+> They also do not share code. The client's PDF engine (`psc-archiver-client/src/pdf/`) is a **port** of the admin's exporter, not an import — roughly 1,800 lines copied verbatim. Nothing links the two copies; a fix to one is a fix to one. See the "PDF engine" note under the consumer seam changes below.
 
 ---
 
@@ -20,23 +25,37 @@ development (cross-origin)
     xior baseURL =                 GET /api/config             (public,  enums)
       VITE_BACKEND_URL + "/api"    GET /api/config/permissions (auth,    registry)
       (= http://localhost:5000/api)
+                                 ▲
+  psc-archiver-client ──HTTP─────┘
+    Vite dev @ :3000, strictPort   both origins must be named in CLIENT_URL
+    same xior baseURL shape        (comma-separated) or CORS refuses one
 
-production (same-origin — one hostname, one certificate)
-  browser ──HTTPS──▶ traefik ──▶ web (nginx)  ── SPA
-                                    └────────── /api/* ──proxy──▶ api :5000
-    xior baseURL = "/api"            api is not routed by traefik and
-                                     publishes no host port
+production (same-origin per host — two hostnames, two certificates)
+  browser ──HTTPS──▶ traefik ──┬─ Host(ADMIN_HOST)   archiver.trynbuild.com
+                               │    web (nginx) ── admin SPA
+                               │          └───── /api/* ──proxy──┐
+                               │                                 │
+                               └─ Host(LEARNER_HOST) learner.trynbuild.com
+                                    learner (nginx) ── learner SPA
+                                           ├───── /api/* ──proxy──┤
+                                           └───── /fonts/* (PDF faces)
+                                                                  ▼
+    xior baseURL = "/api" in both      api :5000 — not routed by traefik,
+    (VITE_BACKEND_URL empty)           publishes no host port
 ```
 
+Two SPAs cannot both own `/` behind one origin, which is why the learner app is a second hostname rather than a path prefix.
+
 - Backend port: **`PORT=5000`** ([psc-archiver-api/.env](psc-archiver-api/.env)), global prefix **`/api`**.
-- Frontend base URL: **`VITE_BACKEND_URL + "/api"`** — `VITE_BACKEND_URL=http://localhost:5000` in [psc-archiver-admin/.env.development](psc-archiver-admin/.env.development). HTTP client is `xior` (fetch-based) at [src/services/configs/xior.js](psc-archiver-admin/src/services/configs/xior.js); all path strings live in [src/services/configs/apiPaths.js](psc-archiver-admin/src/services/configs/apiPaths.js).
+- Frontend base URL: **`VITE_BACKEND_URL + "/api"`** — `VITE_BACKEND_URL=http://localhost:5000` in each frontend's `.env.development`. HTTP client is `xior` (fetch-based); all path strings live in that repo's `src/services/configs/apiPaths.js` ([admin](psc-archiver-admin/src/services/configs/apiPaths.js), [client](psc-archiver-client/src/services/configs/apiPaths.js)).
+- **The client's dev port is pinned.** [psc-archiver-client/vite.config.js](psc-archiver-client/vite.config.js) sets `strictPort: true`, so a busy :3000 fails at startup rather than silently landing on :3001. It has to: the API allowlists dev origins **by name**, so a client on an unexpected port fails every request with a missing `Access-Control-Allow-Origin` — which reads as a backend fault several steps away from the actual cause. Widening `CLIENT_URL` instead would make the origin non-deterministic and invite the same confusion on the next free port.
 - **The handshake has two halves, with two different mechanisms.** This is deliberate, not an unfinished migration:
 
 | What | Mechanism | Frontend copy? |
 |---|---|---|
-| **Permission registry** (`list`, `roleDefaults`) | `GET /api/config/permissions` — **authenticated**, fetched at runtime via `usePermissionRegistry()` | **None.** Deleted. |
-| **Enums** | `GET /api/config` — public. The frontend keeps `src/lib/enums.js` and verifies it with **`pnpm check:drift`** | Yes, by design |
-| **A user's own access** | `GET /api/users/me/permissions` | Cached in the auth store |
+| **Permission registry** (`list`, `roleDefaults`) | `GET /api/config/permissions` — **authenticated**, fetched at runtime via `usePermissionRegistry()` | **None.** Deleted. *(Admin only — the client never reads the registry: it has no access editor, and a learner's two permissions gate one button.)* |
+| **Enums** | `GET /api/config` — public. Each frontend keeps its own `src/lib/enums.js` and verifies it with **`pnpm check:drift`** | Yes, by design — in **both** frontends, independently |
+| **A user's own access** | `GET /api/users/me/permissions` | Cached in the auth store *(admin gates on it; the client does not — see below)* |
 
 See [decision 0010](psc-archiver-api/doc/decisions/0010-config-endpoint-as-source-of-truth.md) and [decision 0026](psc-archiver-api/doc/decisions/0026-permission-registry-endpoint.md).
 
@@ -64,27 +83,29 @@ When a feature touches both sides, **agree on the contract before writing either
 
 ### The four seams — keep these in sync in the same change
 
+"Frontend" below means **whichever frontend consumes the change** — and sometimes both. A new enum that only the back office renders needs no client mirror; one both apps render needs two, each verified by that repo's own `pnpm check:drift`.
+
 | Seam | Backend does | Frontend does |
 |------|--------------|---------------|
-| **1. Enums** | Add a four-export Zod-first block in [src/common/enums.ts](psc-archiver-api/src/common/enums.ts) and wire it into `/api/config` ([app-config.service.ts](psc-archiver-api/src/app-config/app-config.service.ts) + [get-config.dto.ts](psc-archiver-api/src/app-config/dto/get-config.dto.ts)). | Mirror it in [src/lib/enums.js](psc-archiver-admin/src/lib/enums.js) + a label in [options.js](psc-archiver-admin/src/lib/options.js), then run **`pnpm check:drift`**. A deliberate subset goes in `scripts/drift-manifest.mjs` with a reason. |
-| **2. Permissions / RBAC** | Register each `resource:action` in [src/common/permissions.ts](psc-archiver-api/src/common/permissions.ts), decide its role defaults, and gate routes with `@RequirePermissions(PERMISSIONS.X)`. **No config wiring needed** — the registry is served from `PERMISSIONS_LIST` directly. | Nothing to mirror. It appears in the access editor automatically. Gate UI on `useHasAccess()`, which reads the effective set. |
-| **3. Endpoints** | Every route ships a request **and** response DTO (`createZodDto`). | Add the path to `API_PATHS` ([apiPaths.js](psc-archiver-admin/src/services/configs/apiPaths.js)) + a function under [src/services/apis/](psc-archiver-admin/src/services/apis/). Never inline URL strings. |
-| **4. User-facing copy** | Returns data + mechanisms (schema fields, status codes). | Translates to plain business language — no schema jargon in UI. See [docs/arch/12-user-facing-copy.md](psc-archiver-admin/docs/arch/12-user-facing-copy.md). |
+| **1. Enums** | Add a four-export Zod-first block in [src/common/enums.ts](psc-archiver-api/src/common/enums.ts) and wire it into `/api/config` ([app-config.service.ts](psc-archiver-api/src/app-config/app-config.service.ts) + [get-config.dto.ts](psc-archiver-api/src/app-config/dto/get-config.dto.ts)). | Mirror it in that repo's `src/lib/enums.js` — plus a label in [options.js](psc-archiver-admin/src/lib/options.js) (admin) or a `*_LABELS` map beside the values (client) — then run **`pnpm check:drift`**. Register it in that repo's `scripts/drift-manifest.mjs`; a deliberate subset needs a written reason. **A frontend that deliberately does not mirror it still records that**, in the client's `NOT_MIRRORED`. |
+| **2. Permissions / RBAC** | Register each `resource:action` in [src/common/permissions.ts](psc-archiver-api/src/common/permissions.ts), decide its role defaults, and gate routes with `@RequirePermissions(PERMISSIONS.X)`. **No config wiring needed** — the registry is served from `PERMISSIONS_LIST` directly. | **Admin:** nothing to mirror; it appears in the access editor automatically. Gate UI on `useHasAccess()`. **Client:** nothing at all — it gates on *being signed in*, not on permissions (see the consumer seam notes below). |
+| **3. Endpoints** | Every route ships a request **and** response DTO (`createZodDto`). A consumer route goes in `src/papers/`, never in the admin controller. | Add the path to `API_PATHS` ([admin](psc-archiver-admin/src/services/configs/apiPaths.js), [client](psc-archiver-client/src/services/configs/apiPaths.js)) + a function under that repo's `src/services/apis/`. Never inline URL strings. |
+| **4. User-facing copy** | Returns data + mechanisms (schema fields, status codes). | Translates to plain business language — no schema jargon in UI. The audiences differ: admin copy addresses staff ([docs/arch/12-user-facing-copy.md](psc-archiver-admin/docs/arch/12-user-facing-copy.md)), client copy addresses a learner who has never seen a back office. |
 
 If you can only touch one repo in this session, do your side **and** leave a tagged handoff note (below) so the other side is not silently left out of sync.
 
-4. **Sync the docs in the same change** — each repo has a "Documentation sync rule" in its `CLAUDE.md`/`AGENTS.md` mapping code areas to doc files (API: `doc/0X-*.md` tables; admin: `docs/arch/*` + `docs/features/*`). A cross-repo change is not done until both repos' docs reflect it.
+4. **Sync the docs in the same change** — each repo has a "Documentation sync rule" in its `CLAUDE.md`/`AGENTS.md` mapping code areas to doc files (API: `doc/0X-*.md` tables; both frontends: `docs/arch/*` + `docs/features/*`). A cross-repo change is not done until every repo it touched has docs reflecting it.
 
 ---
 
 ## The "tagging" handoff workflow
 
-The two repos already hand work to each other through cross-repo notes. Formalize it — an agent working in one repo requests work from the other by dropping a note the sibling repo's agent will pick up:
+The repos already hand work to each other through cross-repo notes. Formalize it — an agent working in one repo requests work from another by dropping a note the sibling repo's agent will pick up:
 
-- **Backend → Frontend:** `psc-archiver-api/doc/handover/<feature>-frontend-prompt.md` — "here's the new endpoint/enum/permission shape; build the UI." Prior art: [ai-tagging-dashboard-frontend-prompt.md](psc-archiver-api/doc/handover/ai-tagging-dashboard-frontend-prompt.md).
-- **Frontend → Backend:** `psc-archiver-admin/docs/todos/<feature>-backend-gaps.md` — "the UI needs these fields/endpoints/permissions that the API doesn't provide yet." Prior art: [user-management-backend-gaps.md](psc-archiver-admin/docs/todos/user-management-backend-gaps.md).
+- **Backend → Frontend:** `psc-archiver-api/doc/handover/<feature>-frontend-prompt.md` — "here's the new endpoint/enum/permission shape; build the UI." Prior art: [ai-tagging-dashboard-frontend-prompt.md](psc-archiver-api/doc/handover/ai-tagging-dashboard-frontend-prompt.md). **Say which frontend it is for** — the two have different audiences and different route prefixes.
+- **Frontend → Backend:** `<that repo>/docs/todos/<feature>-backend-gaps.md` — "the UI needs these fields/endpoints/permissions that the API doesn't provide yet." Prior art: [user-management-backend-gaps.md](psc-archiver-admin/docs/todos/user-management-backend-gaps.md) (admin), [consumer-auth-backend-gaps.md](psc-archiver-client/docs/todos/consumer-auth-backend-gaps.md) and [quiz-module-backend-gaps.md](psc-archiver-client/docs/todos/quiz-module-backend-gaps.md) (client).
 
-Each note should name: the endpoint(s), the DTO/enum/permission changes, and which of the four seams are affected. When you launch a workspace-root session that spans both repos, you can act on both sides directly instead — but still record the seam changes so future single-repo sessions stay in sync.
+Each note should name: the endpoint(s), the DTO/enum/permission changes, and which of the four seams are affected. When you launch a workspace-root session that spans several repos, you can act on every side directly instead — but still record the seam changes so future single-repo sessions stay in sync.
 
 ---
 
@@ -104,7 +125,8 @@ Each note should name: the endpoint(s), the DTO/enum/permission changes, and whi
 - **"Approved" is `quality.reviewedAt`, not `quality.isVerified`.** The seeder and the legacy backfill set `isVerified` in bulk across the imported corpus with no reviewer, so keying a reviewer-facing "Verified" view on it returns the whole archive. `reviewedAt` exists only where a human decided through the review flow. The two `quality` pairs are documented in [doc/03-data-model.md](psc-archiver-api/doc/03-data-model.md).
 - **`send-to-review` and `return-to-draft` are both real, and different.** Reject (`return-to-draft`) sends a question back to **the writer**; `send-to-review` sends it back to **the reviewer queue** (a writer resubmitting, or a reviewer undoing a decision). Don't consolidate them.
 - **Edit-and-resubmit is two calls** — `PATCH /api/questions/:id` then `POST /api/questions/:id/send-to-review`. `update()` stays pure and there is no combined flag, so the frontend has to handle a save that lands with a failed resubmit.
-- **pnpm only** in both repos — never npm or yarn.
+- **A learner's token is not a weaker admin token.** It carries `paper:read` / `paper:download` and nothing else, so `/api/questions`, `/api/exam-papers/*` and `/api/users` are all closed to it. Anything the learner app needs is a route under `/api/papers`, added to `src/papers/` — never a permission bolted onto an admin route.
+- **pnpm only** in every repo — never npm or yarn.
 
 ---
 
@@ -246,9 +268,88 @@ Two contract details worth carrying forward:
   and layout computed in the browser, exactly like A4. The backend's only new
   knowledge is which edition a given trace code refers to.
 
-## Deployment — the third repo, and why the origin model flips
+## Recent seam changes (consumer client)
 
-Deployment config lives in a **third sibling repo, `psc-archiver-deploy`** (next to the two app repos). It holds the compose files, the deploy scripts, and the runbook. Details: [psc-archiver-deploy/README.md](psc-archiver-deploy/README.md) and [psc-archiver-api/doc/08-deployment.md](psc-archiver-api/doc/08-deployment.md). Plan and status: [psc-archiver-admin/docs/roadmaps/deployment-pipeline.md](psc-archiver-admin/docs/roadmaps/deployment-pipeline.md).
+The Consumer Download MVP added a **second frontend** and the API surface behind it: a learner opens a paper link shared over Telegram, signs in with their mobile number and a one-time code, and downloads the paper as a PDF stamped with a trace code tied to their account. Plan and phase-by-phase record: [psc-archiver-client/docs/roadmaps/consumer-download-mvp.md](psc-archiver-client/docs/roadmaps/consumer-download-mvp.md).
+
+**1. Enums — one new four-export block.** `keralaDistrictSchema` (14 values) in [enums.ts](psc-archiver-api/src/common/enums.ts), exposed as `districts` on `GET /api/config`, mirrored in the client as `KERALA_DISTRICTS` + `KERALA_DISTRICT_OPTIONS`.
+
+- **The order is part of the contract.** Districts are declared **north to south** — how the PSC itself lists them — not alphabetically. The client's drift checker marks both exports `ordered`, so re-sorting the sign-in picker fails the check even though the set still matches.
+- `otpPurposeSchema` was added in the same work and is **deliberately absent** from `/api/config`: it is internal to the OTP module and no UI renders it. That is the rule-4 "internal-only" case, and it is recorded next to the schema.
+- The admin renders no district and mirrors none, but a frontend that deliberately *skips* an enum still has to say so: `districts` is registered in the admin's `NOT_MIRRORED` with that reason. Until it was, `pnpm check:drift` in `psc-archiver-admin` failed on an unlisted key — working exactly as intended, and the reason the "record the non-mirroring too" rule is in the seams table above.
+
+**2. Permissions — a new consumer resource.** `paper:read` and `paper:download` were added to [permissions.ts](psc-archiver-api/src/common/permissions.ts) and to `ROLE_DEFAULT_PERMISSIONS[user]`, **which was previously empty** — the `user` role existed but granted nothing.
+
+- Kept separate from `exam-paper:*` on purpose. `paper:*` reaches only `src/papers/`, the consumer surface; a learner's token can no more read `/api/questions` than an anonymous visitor can.
+- **The client mirrors nothing and gates on nothing.** Its auth store has an `effectivePermissions` slot but it is seeded empty and no screen reads it: with exactly two permissions, both implied by having an account, "signed in" *is* the gate. `RequireAuth` guards the two private routes; the paper page is public and gates only the download button. If the client ever needs a real permission check, it fetches `GET /users/me/permissions` — the sign-in response's `user.permissions` is the **override** layer and is empty for every learner.
+- **The JWT gained `registrationId`.** The trace code is derived from it, and it was not in the payload before — the first verification run minted `CUS00000` for everybody. A token predating the change is **refused** at the download routes rather than falling back: a code identifying nobody is worse than no code, because two such accounts would mint into one namespace and could each record against the other.
+
+**3. Endpoints — ten new routes, in two groups.**
+
+| Route | Gate | Notes |
+|---|---|---|
+| `POST /api/auth/mobile/start` | `@Public()` | Returns `isRegistered` — branch on **this**, not on `register`'s copy |
+| `POST /api/auth/mobile/register` | `@Public()` | Creates the account; returns the same shape as `start` |
+| `POST /api/auth/mobile/verify` | `@Public()` | Calls `login()` verbatim — one token shape for staff and learners |
+| `POST /api/auth/mobile/resend` | `@Public()` | |
+| `GET /api/papers/published` | `@Public()` | Learner list. Fixes `examType` to `exam_paper` rather than inheriting the admin default |
+| `GET /api/papers/:id` | `@Public()` | Summary for the shared link **before** sign-in. No questions, no answers |
+| `GET /api/papers/:id/render-document` | `paper:read`, 20/min | The one content endpoint |
+| `POST /api/papers/:id/downloads/claim` | `paper:download`, 60/hr | → `{ traceId, customerId }`. **The entitlement gate** |
+| `POST /api/papers/:id/downloads` | `paper:download` | Records the completed download; idempotent on `traceId` |
+| `GET /api/papers/me/downloads` | `paper:download` | The learner's own history |
+
+**4. Copy — and an inversion worth knowing.** On this seam the API writes learner-facing sentences itself (`"That code is incorrect."`, `"Please wait 48 seconds before asking for another code."`), and the client surfaces `message` **verbatim** rather than mapping per status code. Two different `429`s — the OTP cooldown and the throttler — are already distinguishable in plain language, so mapping them would only make the wording worse.
+
+> **The one place that breaks:** a rejected request answers `{ message: "Validation failed", errors: [...] }`, so a `400` surfaces the developer headline instead of the field message. The client validates all five sign-in fields against the same rules first, so this is a bug-only path today. Widening the client's shared `parseError` to prefer `errors[]` was tried and reverted — it fixes the fields carrying custom messages and regresses the ones on Zod defaults, where a bad district emits a raw schema dump. **The fix belongs on the API.** Logged at [consumer-auth-backend-gaps.md](psc-archiver-client/docs/todos/consumer-auth-backend-gaps.md).
+
+### Contract details that catch people out
+
+- **Every not-allowed outcome on `/api/papers/*` is a `404`** — including a malformed id, which the admin path answers with `400 Invalid exam paper id`. A learner following a mangled link has hit a missing page, not made a bad request, and a shared link must not be usable to confirm that an unpublished paper exists.
+- **The server mints the trace code; the browser only draws it.** The record route ignores any client-supplied `customerId` / `downloadedBy`, and the client's ported PDF engine deliberately has **no** `generateTraceId`. Replaying a record with the same code is idempotent, which is what lets the client retry safely. [Decision 0031](psc-archiver-api/doc/decisions/0031-server-minted-trace-code.md).
+- **`otpSent: false` is a normal answer, not a failure.** A new learner's journey is `start` (code sent) → `register` (`otpSent: false`, because the code from `start` is still live) → code step. The client keeps the `devCode` from `start` and renders the code step on `false`.
+- **The mobile number goes in the request body on every mobile-auth call** — the per-number rate limit reads it from there, and normalises first, so `+91 98…` and `098…` cannot be alternated for two budgets.
+- **`dateOfBirth` is `YYYY-MM-DD` in, full ISO out.** The request accepts what a native `<input type="date">` submits; the response returns `"1998-05-14T00:00:00.000Z"`.
+- **Three throttlers now, guard-ordered.** `ThrottlerGuard` runs **before** `JwtAuthGuard`, so the per-user throttler is tracked by a SHA-256 of the bearer token rather than the user id — `req.user` does not exist yet. Both opt-in throttlers are skipped on every route that does not carry their decorator; without that, `phone` would have counted `POST /users` and `PATCH /users/me`.
+- **`CLIENT_URL` must name both dev origins.** Setting it *replaces* the fallback list, so a value naming only `:5173` silently breaks the client. Unset, `main.ts` falls back to both.
+- **Two new env keys gate real risk.** `OTP_PROVIDER=console` returns the code in the response body — guarded on `NODE_ENV !== 'production'`, so a deployment that forgets `NODE_ENV` hands out sessions. `msg91` validates its credentials in the sender's constructor, so a missing key fails the boot rather than the first learner's sign-in. [Decision 0030](psc-archiver-api/doc/decisions/0030-otp-sender-abstraction.md).
+
+### The PDF engine is a port, not a shared library
+
+`psc-archiver-client/src/pdf/` is ~2,400 lines, ~1,800 copied verbatim from `psc-archiver-admin/src/pages/question-paper-editor/`. **Nothing links the two copies.** The port was verified byte-for-byte against the admin across five paper/mode/profile combinations — identical page counts, page sizes and content streams — so "the same file an admin would produce" is a measured claim today, and an ageing one tomorrow. A change to the admin's exporter does **not** reach learners, and vice versa; a fix that matters to both has to be made twice, deliberately. The engine's quirks (a mutated module-level `PAGE_FORMATS.mobile`, point-vs-pixel sizing, pre-blended opacity, a font filename containing spaces) came across intact and are documented in [psc-archiver-client/ARCHITECTURE.md](psc-archiver-client/ARCHITECTURE.md#the-pdf-engine-srcpdf).
+
+### Both frontends now have a real drift checker
+
+`pnpm check:drift` exists in **both** frontends and is the same shape in each: a `scripts/drift-manifest.mjs` declaring what is compared, and `scripts/check-backend-drift.mjs` diffing it against a live `GET /api/config`. They are separate scripts against separate mirrors, and each repo runs its own.
+
+The client's adds two checks the admin's does not have, because the client has two exposures the admin does not:
+
+- **Order.** Entries can be marked `ordered`, so re-sorting `KERALA_DISTRICT_OPTIONS` alphabetically fails even though the set still matches. The admin has no list whose rendered sequence comes from the backend.
+- **Label coverage.** Every hand-kept `*_LABELS` map must name every value of its enum, or a screen renders `undefined`. The admin keeps its labels in `options.js` and does not check them.
+
+> **A Windows trap both scripts hit, now fixed in both.** They called `process.exit()` immediately after `fetch`, while undici still held the keep-alive socket — which trips a libuv assertion and reports `3221226505` instead of `0`. A *passing* check read as a failing one, which is precisely the value CI gates on. Both now set `process.exitCode` and return.
+
+## Deployment — the infrastructure repo, and why the origin model flips
+
+Deployment config lives in a **separate sibling repo, `psc-archiver-deploy`** (next to the app repos). It holds the compose files, the deploy scripts, and the runbook. Details: [psc-archiver-deploy/README.md](psc-archiver-deploy/README.md) and [psc-archiver-api/doc/08-deployment.md](psc-archiver-api/doc/08-deployment.md). Plan and status: [psc-archiver-admin/docs/roadmaps/deployment-pipeline.md](psc-archiver-admin/docs/roadmaps/deployment-pipeline.md).
+
+### Two frontends, two origins
+
+Each SPA is its own compose service, its own image, and its own Traefik router. The API container is routed by neither and publishes no host port — both nginx tiers reach it over the internal network.
+
+| Repo | Service | Image | Host | Deploy |
+|---|---|---|---|---|
+| `psc-archiver-admin` | `web` | `ghcr.io/mroshan74/psc-archiver-web` | `archiver.trynbuild.com` (`ADMIN_HOST`) | push to `master` → `deploy.sh web <sha>` |
+| `psc-archiver-client` | `learner` | `ghcr.io/mroshan74/psc-archiver-client` | `learner.trynbuild.com` (`LEARNER_HOST`) | push to **`main`** → `deploy.sh learner <sha>` |
+
+**Two SPAs cannot both own `/` behind one origin** — that is why this is a second hostname rather than a path prefix. A prefix (`/app/`) would have needed a matching Vite `base`, a router `basename`, and a shift in every absolute asset path including `/fonts/…`. The rejected alternative is recorded in [psc-archiver-client/docs/todos/client-deployment-gaps.md](psc-archiver-client/docs/todos/client-deployment-gaps.md).
+
+Consequences that cross the seam:
+
+- **`ADMIN_HOST` was `APP_HOST`.** Renamed when one host name stopped describing the deployment. A server whose `.env` still has the old key stops on `deploy.sh`'s environment check — which runs *before anything is touched*, so it fails clean.
+- **`CLIENT_URL` must name every origin.** It *replaces* the API's fallback list rather than extending it, so adding a frontend without updating it silently drops the others. This is the same trap as the dev-origin one below, at a different scale.
+- **Traefik router and service names must be unique across the whole Docker provider** — the admin's are `archiver`, the learner's are `learner`.
+- **The learner app's fonts are the sharpest risk in the whole deployment.** `src/pdf/fonts/catalog.js` fetches four faces from `/fonts/` at render time, one of them `Century Schoolbook Std Regular.otf` — spaces and all, requested `encodeURI`'d. [psc-archiver-client/nginx.conf](psc-archiver-client/nginx.conf) carries a dedicated `location ^~ /fonts/` block that supplies the `font/otf` and `font/ttf` MIME types nginx's stock `mime.types` lacks. A 404 there kills every Malayalam export and there is no CDN fallback. **Verify on the prod-parity stack, never on the dev server**, which serves these off Vite.
 
 **The seam that matters here: dev is cross-origin, production is same-origin.**
 
@@ -257,42 +358,51 @@ Deployment config lives in a **third sibling repo, `psc-archiver-deploy`** (next
 | dev ([.env.development](psc-archiver-admin/.env.development)) | `http://localhost:5000` | `http://localhost:5000/api` | **cross-origin** — needs the API's CORS allowlist |
 | production ([.env.production](psc-archiver-admin/.env.production)) | *(empty)* | `/api` | **same-origin, relative** |
 
-In production nginx serves the SPA **and** proxies `/api/*` to the API container ([psc-archiver-admin/nginx.conf](psc-archiver-admin/nginx.conf)). The API is not routed by Traefik and publishes no host port. Three consequences worth carrying in your head:
+In production each SPA's nginx serves that SPA **and** proxies `/api/*` to the API container ([psc-archiver-admin/nginx.conf](psc-archiver-admin/nginx.conf), [psc-archiver-client/nginx.conf](psc-archiver-client/nginx.conf)). The API is not routed by Traefik and publishes no host port. Three consequences worth carrying in your head:
 
 - **CORS does not apply in production.** Do not "fix" a production issue by widening `CLIENT_URL`. (It is env-driven now — a comma-separated list read in [main.ts](psc-archiver-api/src/main.ts) — but the SPA never exercises it.)
 - **One web image works in every environment**, because no backend hostname is baked into the bundle.
-- **Anything you add under `/api/*` is reachable through the proxy automatically**; anything at another path prefix is not. If a new top-level route is ever added to the API outside the `/api` prefix, `nginx.conf` needs a matching block in the same change.
+- **Anything you add under `/api/*` is reachable through the proxy automatically**; anything at another path prefix is not. If a new top-level route is ever added to the API outside the `/api` prefix, **both** `nginx.conf` files need a matching block in the same change.
 
 **Build-time vs runtime env — a real trap:**
 
 | Repo | When env is read | Implication |
 |---|---|---|
 | `psc-archiver-admin` | **Build time.** Vite inlines `VITE_*` and `BUILD_VERSION` | A running container cannot be re-pointed; you must rebuild |
+| `psc-archiver-client` | **Build time.** Same Vite mechanism, same `.env.production` shape (empty `VITE_BACKEND_URL` → relative `/api`) | Same. Note `.env.production` is tracked here on purpose — `.gitignore` negates it — because `vite build` and the Docker context both read it |
 | `psc-archiver-api` | **Runtime.** Ordinary `process.env` | Change `.env` on the server and restart |
 
-**Health + version seams:** the API exposes public `GET /api/healthz` and `GET /api/readyz` (see [doc/02-modules.md](psc-archiver-api/doc/02-modules.md)). CI stamps the build into the API as `BUILD_ID` (which lands in every issued token, retiring old sessions on deploy) and into the SPA as `__BUILD_VERSION__`, rendered in the sidebar footer. Both use the same format, `YYMMDDHHMM-rc<short-sha>`.
+**Health + version seams:** the API exposes public `GET /api/healthz` and `GET /api/readyz` (see [doc/02-modules.md](psc-archiver-api/doc/02-modules.md)); each nginx tier exposes its own static `GET /healthz`, which deliberately does *not* depend on the API. CI stamps the build into the API as `BUILD_ID` (which lands in every issued token, retiring old sessions on deploy) and into each SPA as `__BUILD_VERSION__`. All use the same format, `YYMMDDHHMM-rc<short-sha>`. The admin renders it in its sidebar footer; **the client has no surface for it yet**, so its stamped value is currently write-only.
 
 ## Run the full stack
 
-**For development** (hot reload — two terminals):
+**For development** (hot reload — one terminal per app; run whichever frontends you need):
 
 ```bash
 # terminal 1 — backend on :5000
 cd psc-archiver-api && pnpm install && pnpm run start:dev
 
-# terminal 2 — frontend on :5173 (cross-origin to VITE_BACKEND_URL)
+# terminal 2 — staff frontend on :5173
 cd psc-archiver-admin && pnpm install && pnpm run dev
+
+# terminal 3 — learner frontend on :3000 (strictPort — fails loudly if taken)
+cd psc-archiver-client && pnpm install && pnpm run dev
 ```
 
-**To see or demo the app as it actually runs in production** (single origin, real nginx, its own throwaway MongoDB — no hot reload):
+Both dev origins must be named in the API's `CLIENT_URL`, or unset it and take the fallback (`http://localhost:5173,http://localhost:3000`). Setting it **replaces** that list.
+
+**To see or demo the apps as they actually run in production** (each single-origin behind real nginx, its own throwaway MongoDB — no hot reload):
 
 ```bash
 cd psc-archiver-deploy
 docker compose -f compose.local.yml up -d --build
 docker compose -f compose.local.yml --profile seed run --rm seed   # first run only
-# → http://localhost:8080
+# → http://localhost:8080  (admin)
+# → http://localhost:8081  (learner)
 ```
 
-Use the second one when a change involves the `/api` proxy, the containers, or anything a two-terminal dev run cannot reproduce.
+Use this when a change involves the `/api` proxy, the containers, or anything a dev run cannot reproduce. It now serves **both** frontends, against the same api container — mirroring production, where the only difference is Traefik and TLS in front.
 
-Registered backend resources today: `user`, `question`, `exam-paper`, `taxonomy`, `ai-tagging`, `analytics`, `reports`, `settings`, `audit-log`.
+> **Two things are exercised here and nowhere else.** A dev run proves neither, so a change to either must be checked on this stack before it ships: each SPA's single-origin `/api` proxy (dev is cross-origin to `:5000`), and the learner app's PDF fonts, served from `/fonts/` including the space-containing `Century Schoolbook Std Regular.otf`. For the fonts, download a paper and watch the network tab for all four requests returning 200.
+
+Registered backend resources today: `user`, `question`, `exam-paper`, `paper-series`, `paper`, `taxonomy`, `ai-tagging`, `analytics`, `reports`, `settings`, `audit-log`, `seeder`. **`paper` is the consumer resource** (`paper:read`, `paper:download`, served by `src/papers/`) and is the `user` role's default set; `exam-paper:*` is the back office. Never conflate the two.
