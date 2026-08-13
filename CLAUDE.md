@@ -63,6 +63,22 @@ The frontends are meant to read enums + permissions from **`GET /api/config`** (
 
 > ⚠ **Known gap:** today `/api/config` returns enums only and the frontend doesn't consume it yet — enum/permission changes must be mirrored manually on both sides in the same change. See the "Current state vs target" note in [INTEGRATION.md](INTEGRATION.md).
 
+## User-facing copy: no em dashes, in any repo
+
+**Never ship an em dash in a string a reader sees** — a label, button, hint, placeholder, toast, empty state, page title, meta description, or an API exception message (those render verbatim in a frontend toast). Use a comma, a colon, parentheses, or two sentences. A screen peppered with em dashes reads as machine-written at a glance.
+
+Two exceptions only: an **en dash in a genuine numeric range** (`Questions 1–50`, `A–D`, `70–84%`) and **`—` alone as an empty-value placeholder**. An en dash joining two nouns is neither.
+
+Both frontends gate this with **`pnpm check:copy`** (`scripts/check-copy.mjs`, one allowlist per repo — `licenceLine.js` keeps its dashes because they are a regex character class). The API has no checker; its exception messages are reviewed by hand. **Code comments, JSDoc, log lines and existing markdown keep their dashes** — only what a reader sees is in scope, and this file is not.
+
+Per-repo detail: [psc-archiver-client/docs/arch/12-user-facing-copy.md](psc-archiver-client/docs/arch/12-user-facing-copy.md) (learner voice), [psc-archiver-admin/docs/arch/12-user-facing-copy.md](psc-archiver-admin/docs/arch/12-user-facing-copy.md) (staff voice), and seam 4 in [INTEGRATION.md](INTEGRATION.md).
+
+## Planning and roadmaps
+
+**Plan mode produces a roadmap, and roadmaps advance one phase at a time.** A plan made in plan mode is written into the owning repo as **`docs/roadmaps/<feature>.md`** (`doc/roadmaps/` in the API) — phases of `- [ ]` checklist tasks with explicit exit criteria per phase, not left as a chat reply. When implementing: do the **one** phase or task that was asked for, tick its boxes in the roadmap, report what was done, and **stop**. Do not continue into the next phase unless explicitly told to; a request that names several phases or tasks overrides this for those only. Tick a box only when the work is actually done **and** its docs are updated in the same change.
+
+A roadmap that spans repos lives in the repo that owns the bulk of the work, names its owner repos up front, and follows [INTEGRATION.md](INTEGRATION.md) for the cross-repo seams. `psc-archiver-deploy` has no `CLAUDE.md` of its own — this rule covers it. Worked example: [psc-archiver-client/docs/roadmaps/README.md](psc-archiver-client/docs/roadmaps/README.md).
+
 ## Documentation sync rule
 
 Every code change updates the owning repo's docs **in the same change** — docs are part of the definition of done. Each repo's `CLAUDE.md` carries a "Documentation sync rule" table mapping code areas to doc files (API: `doc/0X-*.md` + `doc/decisions/`; admin and client: `docs/arch/*` + `docs/features/*` + the shared-atoms manifest). A new feature gets a new doc file, indexed in the repo's doc README. A cross-repo change updates every touched repo's docs plus the handoff note per [INTEGRATION.md](INTEGRATION.md).

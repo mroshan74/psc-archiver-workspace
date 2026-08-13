@@ -90,7 +90,18 @@ When a feature touches both sides, **agree on the contract before writing either
 | **1. Enums** | Add a four-export Zod-first block in [src/common/enums.ts](psc-archiver-api/src/common/enums.ts) and wire it into `/api/config` ([app-config.service.ts](psc-archiver-api/src/app-config/app-config.service.ts) + [get-config.dto.ts](psc-archiver-api/src/app-config/dto/get-config.dto.ts)). | Mirror it in that repo's `src/lib/enums.js` — plus a label in [options.js](psc-archiver-admin/src/lib/options.js) (admin) or a `*_LABELS` map beside the values (client) — then run **`pnpm check:drift`**. Register it in that repo's `scripts/drift-manifest.mjs`; a deliberate subset needs a written reason. **A frontend that deliberately does not mirror it still records that**, in the client's `NOT_MIRRORED`. |
 | **2. Permissions / RBAC** | Register each `resource:action` in [src/common/permissions.ts](psc-archiver-api/src/common/permissions.ts), decide its role defaults, and gate routes with `@RequirePermissions(PERMISSIONS.X)`. **No config wiring needed** — the registry is served from `PERMISSIONS_LIST` directly. | **Admin:** nothing to mirror; it appears in the access editor automatically. Gate UI on `useHasAccess()`. **Client:** nothing at all — it gates on *being signed in*, not on permissions (see the consumer seam notes below). |
 | **3. Endpoints** | Every route ships a request **and** response DTO (`createZodDto`). A consumer route goes in `src/papers/`, never in the admin controller. | Add the path to `API_PATHS` ([admin](psc-archiver-admin/src/services/configs/apiPaths.js), [client](psc-archiver-client/src/services/configs/apiPaths.js)) + a function under that repo's `src/services/apis/`. Never inline URL strings. |
-| **4. User-facing copy** | Returns data + mechanisms (schema fields, status codes). | Translates to plain business language — no schema jargon in UI. The audiences differ: admin copy addresses staff ([docs/arch/12-user-facing-copy.md](psc-archiver-admin/docs/arch/12-user-facing-copy.md)), client copy addresses a learner who has never seen a back office. |
+| **4. User-facing copy** | Returns data + mechanisms (schema fields, status codes). **Exception messages are the exception**: they render verbatim in a frontend toast, so they follow the copy rule too. | Translates to plain business language — no schema jargon in UI. The audiences differ: admin copy addresses staff ([docs/arch/12-user-facing-copy.md](psc-archiver-admin/docs/arch/12-user-facing-copy.md)), client copy addresses a learner who has never seen a back office ([docs/arch/12-user-facing-copy.md](psc-archiver-client/docs/arch/12-user-facing-copy.md)). |
+
+> **No em dashes in user-facing copy, in any of the three repos.** Use a comma, a
+> colon, parentheses, or two sentences. The only exceptions are an en dash in a
+> genuine numeric range (`Questions 1–50`, `A–D`, `70–84%`) and `—` alone as an
+> empty-value placeholder. Both frontends gate this with **`pnpm check:copy`**
+> (`scripts/check-copy.mjs`, one allowlist per repo); the API has no checker, so
+> its exception messages are reviewed by hand against the same rule. Code
+> comments, JSDoc, log lines and existing markdown keep their dashes — only what
+> a reader sees is in scope. En dashes in `taxonomy-seed.json` topic titles are
+> **deliberately left alone**: they are content, not chrome, and changing them
+> means a re-seed. Reasoning: [psc-archiver-client/docs/arch/12-user-facing-copy.md](psc-archiver-client/docs/arch/12-user-facing-copy.md).
 
 If you can only touch one repo in this session, do your side **and** leave a tagged handoff note (below) so the other side is not silently left out of sync.
 
