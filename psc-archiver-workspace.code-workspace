@@ -16,5 +16,8 @@
 		{
 			"path": "psc-archiver-client"
 		}
-	]
+	],
+	"settings": {
+		"liveServer.settings.multiRootWorkspaceName": "workspace-root"
+	}
 }
