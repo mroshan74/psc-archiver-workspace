@@ -33,7 +33,8 @@ development (cross-origin)
 production (same-origin per host — two hostnames, two certificates)
   browser ──HTTPS──▶ traefik ──┬─ Host(ADMIN_HOST)   archiver.trynbuild.com
                                │    web (nginx) ── admin SPA
-                               │          └───── /api/* ──proxy──┐
+                               │          ├───── /api/* ──proxy──┐
+                               │          └───── /fonts/* (PDF faces)
                                │                                 │
                                └─ Host(LEARNER_HOST) learner.trynbuild.com
                                     learner (nginx) ── learner SPA
@@ -330,6 +331,17 @@ The Consumer Download MVP added a **second frontend** and the API surface behind
 
 `psc-archiver-client/src/pdf/` is ~2,400 lines, ~1,800 copied verbatim from `psc-archiver-admin/src/pages/question-paper-editor/`. **Nothing links the two copies.** The port was verified byte-for-byte against the admin across five paper/mode/profile combinations — identical page counts, page sizes and content streams — so "the same file an admin would produce" is a measured claim today, and an ageing one tomorrow. A change to the admin's exporter does **not** reach learners, and vice versa; a fix that matters to both has to be made twice, deliberately. The engine's quirks (a mutated module-level `PAGE_FORMATS.mobile`, point-vs-pixel sizing, pre-blended opacity, a font filename containing spaces) came across intact and are documented in [psc-archiver-client/ARCHITECTURE.md](psc-archiver-client/ARCHITECTURE.md#the-pdf-engine-srcpdf).
 
+**The rich-text work doubled the list of twins**, and re-proved the claim at a stronger level: the same fixture rendered through both apps produces the **same drawing operators, in the same order, at the same coordinates, on every page** of every mode/profile combination. Nine files are now byte-identical apart from import depth and must be changed in both repos in the same change:
+
+| Admin | Client |
+|---|---|
+| `question-paper-editor/components/pdf/` → `PdfQuestionBlock.jsx`, `PdfQuestionPage.jsx`, `PaperDocument.jsx`, `toPdfElements.jsx`, `questionMath.js` | `src/pdf/components/` |
+| `question-paper-editor/helpers/` → `autoPagination.js`, `answerKeyLayout.js` | `src/pdf/helpers/` |
+| `src/lib/questionAnswer.js`, `components/common/rich-text/helpers/{richTextUtils,mathRender}.js` | `src/pdf/helpers/` — all three sit **inside** `src/pdf/` in the client, because anything outside it is a route for a static import back into the 2.1 MB engine |
+| `src/lib/fonts/catalog.js` | `src/pdf/fonts/catalog.js` |
+
+Two further asymmetries to keep in mind: the client needs `mathjax-full`'s six CommonJS entrypoints in `optimizeDeps.include` or **`pnpm dev` cannot load MathJax at all** while the production build hides it completely; and the client's `toEditorQuestion` is a trimmed half of the admin's, so it had to be taught to read `answerIndex` — without which the whole port looks fine and prints a wrong answer key.
+
 ### Both frontends now have a real drift checker
 
 `pnpm check:drift` exists in **both** frontends and is the same shape in each: a `scripts/drift-manifest.mjs` declaring what is compared, and `scripts/check-backend-drift.mjs` diffing it against a live `GET /api/config`. They are separate scripts against separate mirrors, and each repo runs its own.
@@ -340,6 +352,35 @@ The client's adds two checks the admin's does not have, because the client has t
 - **Label coverage.** Every hand-kept `*_LABELS` map must name every value of its enum, or a screen renders `undefined`. The admin keeps its labels in `options.js` and does not check them.
 
 > **A Windows trap both scripts hit, now fixed in both.** They called `process.exit()` immediately after `fetch`, while undici still held the keep-alive socket — which trips a libuv assertion and reports `3221226505` instead of `0`. A *passing* check read as a failing one, which is precisely the value CI gates on. Both now set `process.exitCode` and return.
+
+## Recent seam changes (rich-text question content)
+
+Question content gained **bold, underline and inline math**, and the correct answer stopped being matched by text. It touched all three repos and, unusually, **added no enum and no permission**. Roadmap with per-phase measurements: [psc-archiver-admin/docs/roadmaps/rich-text-questions.md](psc-archiver-admin/docs/roadmaps/rich-text-questions.md); backend rationale: [decision 0032](psc-archiver-api/doc/decisions/0032-rich-text-question-content.md).
+
+1. **Enums — none.** The formatting vocabulary (bold, underline, math) is a document schema the editor owns, not a backend-validated value set, so nothing was added to `/api/config` and neither frontend's `check:drift` changed.
+2. **Permissions — none.** Anyone who can write a question can format one.
+3. **Endpoints — no new route; six existing field shapes widened.** `question`, `statements[]`, `options[]`, `explanation` and `hint` now accept **`string | object`** (a TipTap document), and `answerIndex` (0-3) was added. The change is entirely in the DTOs and the schema.
+4. **Copy translations** — the editor's `Bold` · `Underline` · `Math`, the math tooltip (`Add a formula, for example x squared`) and its failure line (`That formula could not be read. Check it and try again.`). "Rich text", "LaTeX", "TipTap", "JSON" and "raster" are all banned from what a user sees.
+
+### Contract details that catch people out
+
+- **The dual shape is permanent, not a migration window.** A field stores a plain string when it has no formatting and a document only when it does; no legacy row is ever converted. All ~14,900 archived questions are still plain strings. **Every consumer on both sides must read either shape** — the frontends through `toPlainText`, the backend through `extractPlainText`.
+- **`toPlainText` is a port of the backend's `extractPlainText`, and the two must stay character-identical.** The backend derives `questionPlain` and the correct answer's text from its copy, so a one-space difference silently breaks answer matching and moves every AI-tagging hash. [psc-archiver-api/src/common/rich-text.ts](psc-archiver-api/src/common/rich-text.ts) ↔ `<frontend>/…/rich-text/helpers/richTextUtils.js`. Change one, change all three, and re-run the parity check.
+- **`answerIndex` is the identity; `answer` is a derived plain-text mirror.** The backend rewrites `answer` from `options[answerIndex]` on every save. `answer` is still *accepted* as a compatibility input (its text is matched back to an option) but never stored as authored. Two traps: an update sending `answer` **without** `answerIndex` drops the stored index first, deliberately, so reordered options cannot silently mark the wrong option correct; and an out-of-range index is re-resolved from the answer text rather than rejected, so a stale index can never make a legacy row unsaveable.
+- **The `*Plain` mirrors are what search and AI tagging read.** `?q=` filters `questionPlain`, not `question` — MongoDB never matches a regex against an object, so a formatted question would drop out of search with no error. The backfill is therefore a **prerequisite, not cleanup**: a row without `questionPlain` is invisible to search.
+- **The question hash is version 2.** Phase 3's bump moved every hash, so the AI-tagging queue must be drained before that version deploys or every exported-but-unimported job is stranded as stale. Later phases moved no hash (verified over all 14,868 rows).
+- **A formula-only field extracts to its LaTeX source**, which is what stops it becoming an empty option to search, to the hash and to the derived answer. So `answer` for such a question is the source string.
+- **Explanation and hint never reach the PDF**, so formatting in those two fields is screen-only by design.
+
+### The `@react-pdf/layout` patch is part of the deployment contract
+
+Inline math needs a **one-line patch** to `@react-pdf/layout` (adding `yOffset` to the attachment it builds). Without it every fraction and subscript floats above its line by its own depth — up to 4.49pt at 12pt body text — **silently, with no error**. Stock react-pdf cannot place inline math with depth at all, and the line is still missing upstream, so an upgrade is not a route.
+
+Three things follow, and all three have bitten already:
+
+- **Both frontends carry it, as two separate patch files.** They resolve different transitive versions (admin **4.6.1**, client **4.7.0**) despite both pinning `@react-pdf/renderer` 4.5.1. The patched block is identical.
+- **pnpm 10 declares it in `pnpm-workspace.yaml`, not `package.json`.** Each repo has a `pnpm-workspace.yaml` with `patchedDependencies` plus a `patches/` directory, and the lockfile records the same block.
+- **Both `Dockerfile`s must copy those two into the install layer**, alongside `package.json` and `pnpm-lock.yaml`. They did not, and `pnpm install --frozen-lockfile` aborted with `ERR_PNPM_LOCKFILE_CONFIG_MISMATCH` before fetching a single package — so **neither SPA image could be built at all** between the patch landing and 2026-08-18. Never relax that to `--no-frozen-lockfile` to get a green build: it would install the package unpatched and ship silently misplaced math.
 
 ## Deployment — the infrastructure repo, and why the origin model flips
 
@@ -361,7 +402,8 @@ Consequences that cross the seam:
 - **`ADMIN_HOST` was `APP_HOST`.** Renamed when one host name stopped describing the deployment. A server whose `.env` still has the old key stops on `deploy.sh`'s environment check — which runs *before anything is touched*, so it fails clean.
 - **`CLIENT_URL` must name every origin.** It *replaces* the API's fallback list rather than extending it, so adding a frontend without updating it silently drops the others. This is the same trap as the dev-origin one below, at a different scale.
 - **Traefik router and service names must be unique across the whole Docker provider** — the admin's are `archiver`, the learner's are `learner`.
-- **The learner app's fonts are the sharpest risk in the whole deployment.** `src/pdf/fonts/catalog.js` fetches four faces from `/fonts/` at render time, one of them `Century Schoolbook Std Regular.otf` — spaces and all, requested `encodeURI`'d. [psc-archiver-client/nginx.conf](psc-archiver-client/nginx.conf) carries a dedicated `location ^~ /fonts/` block that supplies the `font/otf` and `font/ttf` MIME types nginx's stock `mime.types` lacks. A 404 there kills every Malayalam export and there is no CDN fallback. **Verify on the prod-parity stack, never on the dev server**, which serves these off Vite.
+- **The PDF fonts are the sharpest risk in the whole deployment, and now in both images.** Each app fetches its faces from `/fonts/` at render time — six files, one of them `Century Schoolbook Std Regular.otf`, spaces and all, requested `encodeURI`'d. **Both** [psc-archiver-admin/nginx.conf](psc-archiver-admin/nginx.conf) and [psc-archiver-client/nginx.conf](psc-archiver-client/nginx.conf) now carry the same `location ^~ /fonts/` block: it supplies the `font/otf` / `font/ttf` MIME types nginx's stock `mime.types` lacks, and `try_files $uri =404` so a missing face fails as a 404. Without that last line the request falls through to the SPA catch-all and a **missing font is served as `index.html` with a 200**, which fontkit then fails to parse several layers away from the cause. That was the admin's behaviour until 2026-08-18. A real 404 kills every Malayalam export and there is no CDN fallback, so **verify on the prod-parity stack, never on the dev server**, which serves these off Vite.
+- **Filename casing is load-bearing.** The Mandaram regular ships as `MANDARAM.ttf` and its bold cut as `Mandaram-Bold.ttf`. The container filesystem is case-sensitive and the developer machines are not, so a catalog string that drifts from the file passes locally and 404s only in production. Both catalogs carry a comment saying so.
 
 **The seam that matters here: dev is cross-origin, production is same-origin.**
 
