@@ -129,7 +129,10 @@ Each note should name: the endpoint(s), the DTO/enum/permission changes, and whi
   - `GET /api/config/permissions` → the **static registry** (what exists, what each role grants by default).
   - `GET /api/users/me/permissions` → the signed-in user's **effective set**. **This is what gates the UI.**
   - `user.permissions` on `GET /users/me` and in the JWT → the raw **override layer** (bare grants, `!`-prefixed revokes). Empty for most users. Gating on it hides every action a writer or reviewer owns, because their access comes from role defaults. The frontend edits this field in the access editor and gates on nothing else.
-- **Guard style on the backend is mostly `@RequirePermissions` now.** Users, Questions, AiTagging, ExamPapers, and Taxonomy routes use permission gates; a few status-only routes (e.g. paper publish via `PATCH { status }`) still do not require `EXAM_PAPER_PUBLISH`. `SETTINGS_MANAGE` is enforced by `PUT /api/app-settings/export-licence` and is in the `admin` defaults. The remaining unenforced registered permissions are for future modules (`REPORTS_EXPORT`, `AUDIT_LOG_READ`). See [psc-archiver-api/doc/07-future-work.md](psc-archiver-api/doc/07-future-work.md).
+- **Guard style on the backend is mostly `@RequirePermissions` now.** Users, Questions, AiTagging, ExamPapers, and Taxonomy routes use permission gates; a few status-only routes (e.g. paper publish via `PATCH { status }`) still do not require `EXAM_PAPER_PUBLISH`. The remaining unenforced registered permissions are for future modules (`REPORTS_EXPORT`, `AUDIT_LOG_READ`, `LEAD_*`). See [psc-archiver-api/doc/07-future-work.md](psc-archiver-api/doc/07-future-work.md).
+- **`SETTINGS_MANAGE` is granted but gates nothing, and reading it as "may save" is now wrong.** All three `PUT /api/app-settings/*` routes are `@Roles(superadmin)`: `AppSetting` carries no `organizationId`, so one row backs every organization and a tenant writing it changed what every other tenant's papers print. The permission is still in the `admin` and `organization_admin` defaults, so `canAccess({ anyPerm: ["settings:manage"] })` answers **yes** and the request comes back **403**. Gate on `roles: ["superadmin"]` until those documents have owners. See [psc-archiver-api/doc/decisions/0036](psc-archiver-api/doc/decisions/0036-global-app-settings-are-superadmin-only.md).
+- **A cross-organization request is a 404, and a 403 means something else entirely.** Every scoped loader answers "not found" for another organization's document, on purpose, so an error cannot confirm which ids are real; a foreign id arriving inside a request **body** answers 400. That leaves 403 meaning "this account cannot do this at all" (the two global permission/role guards) or "its organization is out of service" (`OrganizationStatusGuard`). A frontend writing copy for a tenancy refusal is writing it for a 404. The full audit is [psc-archiver-api/doc/09-tenancy-audit.md](psc-archiver-api/doc/09-tenancy-audit.md), and `dist/scripts/check-organization-isolation.js` is the 65-probe script that keeps checking it.
+- **Backend 403 messages are not all fit to show.** Most are written for a reader ("Your organization is not active at the moment…"), but both global guards throw `Insufficient permissions`, and the grant-cap refusal ends with a list of raw `resource:action` keys. The admin app's [xior interceptor](psc-archiver-admin/src/services/configs/xior.js) rewrites those three cases to plain copy and passes the rest through; `psc-archiver-client` does **not** yet, and should when it next grows a surface that can be refused.
 - **Auth is plaintext-by-default + `mustChangePassword`.** Passwords are stored plaintext until the user changes them; only `POST /api/users/me/change-password` hashes. The login response carries `mustChangePassword`; the JWT does not. Frontend must honor the first-login change-password flow.
 - **Admin URLs use the Mongo `_id`** (the `id` virtual / ObjectId hex), e.g. `GET /api/users/:id` — not `shareId`/`registrationId`.
 - **`?reviewScope` can't be combined with `status` / `verified` / `rejected`** on `GET /api/questions`. They filter the same Mongo fields, so the backend returns a **400** rather than letting one silently win. The same rule applies to `GET /api/questions/classification-stats`, which shares the filter shape. See [ADR 0020](psc-archiver-api/doc/decisions/0020-reviewer-review-history-and-send-to-review.md).
@@ -372,19 +375,143 @@ Question content gained **bold, underline and inline math**, and the correct ans
 - **A formula-only field extracts to its LaTeX source**, which is what stops it becoming an empty option to search, to the hash and to the derived answer. So `answer` for such a question is the source string.
 - **Explanation and hint never reach the PDF**, so formatting in those two fields is screen-only by design.
 
-### The `@react-pdf/layout` patch is part of the deployment contract
+### The react-pdf patches are part of the deployment contract
 
-Inline math needs a **one-line patch** to `@react-pdf/layout` (adding `yOffset` to the attachment it builds). Without it every fraction and subscript floats above its line by its own depth — up to 4.49pt at 12pt body text — **silently, with no error**. Stock react-pdf cannot place inline math with depth at all, and the line is still missing upstream, so an upgrade is not a route.
+Inline math needs **two one-line patches**, and each frontend carries both against its own resolved versions — four patch files in all, with the changed line byte-identical across each pair:
 
-Three things follow, and all three have bitten already:
+| Package | What it fixes | Admin | Client |
+|---|---|---|---|
+| `@react-pdf/layout` | **Where the formula is drawn.** Adds `yOffset` to the attachment it builds, landing the formula's own baseline on the text baseline. Without it every fraction and subscript floats above its line by its own depth, up to 4.49pt at 12pt body text. | 4.6.1 | 4.7.0 |
+| `@react-pdf/textkit` | **How much room the line reserves.** Subtracts that same shift from the line ascent. Without it the line still reserves the formula's full height and drops by exactly the depth, printing a question's first line up to 5.72pt below its own question number. | 6.3.0 | 6.4.0 |
 
-- **Both frontends carry it, as two separate patch files.** They resolve different transitive versions (admin **4.6.1**, client **4.7.0**) despite both pinning `@react-pdf/renderer` 4.5.1. The patched block is identical.
-- **pnpm 10 declares it in `pnpm-workspace.yaml`, not `package.json`.** Each repo has a `pnpm-workspace.yaml` with `patchedDependencies` plus a `patches/` directory, and the lockfile records the same block.
-- **Both `Dockerfile`s must copy those two into the install layer**, alongside `package.json` and `pnpm-lock.yaml`. They did not, and `pnpm install --frozen-lockfile` aborted with `ERR_PNPM_LOCKFILE_CONFIG_MISMATCH` before fetching a single package — so **neither SPA image could be built at all** between the patch landing and 2026-08-18. Never relax that to `--no-frozen-lockfile` to get a green build: it would install the package unpatched and ship silently misplaced math.
+Both failures are **silent, with no error**. Stock react-pdf cannot place inline math with depth at all, and neither line has landed upstream, so an upgrade is not a route.
+
+Four things follow, and the first three have bitten already:
+
+- **The repos resolve different transitive versions** despite both pinning `@react-pdf/renderer` 4.5.1. The patched blocks are identical in each pair, so a patch written for one repo transplants to the other by changing only its version key.
+- **pnpm 10 declares them in `pnpm-workspace.yaml`, not `package.json`.** Each repo has a `pnpm-workspace.yaml` with `patchedDependencies` plus a `patches/` directory, and the lockfile records the same block.
+- **Both `Dockerfile`s must copy those two into the install layer**, alongside `package.json` and `pnpm-lock.yaml`. They did not, and `pnpm install --frozen-lockfile` aborted with `ERR_PNPM_LOCKFILE_CONFIG_MISMATCH` before fetching a single package — so **neither SPA image could be built at all** between the patch landing and 2026-08-18. Never relax that to `--no-frozen-lockfile` to get a green build: it would install the packages unpatched and ship silently misplaced math.
+- **Verifying them takes two different measurements, because they move different things.** The layout patch is checked by reading a formula's image placement off the PDF's own transform matrix (its bottom edge must sit exactly `depthPt` below the baseline beside it); the textkit patch by reading a question number's baseline against the first body baseline on its line. Checking only one would miss a regression in the other.
+
+## Recent seam changes (consolidated user-role model)
+
+`writer` and `reviewer` became **primary** roles, and two hardcoded `admin` role
+checks became permissions. Two repos: `psc-archiver-api` and
+`psc-archiver-admin`; `psc-archiver-client` is untouched, because a learner
+gates on being signed in rather than on a role. Roadmap:
+[psc-archiver-api/doc/roadmaps/user-role-consolidation.md](psc-archiver-api/doc/roadmaps/user-role-consolidation.md);
+rationale: [decision 0035](psc-archiver-api/doc/decisions/0035-consolidated-user-role-model.md).
+
+1. **Enums — `primaryRoles` gained `writer` and `reviewer`** (`/api/config`).
+   `assignableRoles` is unchanged, so its **exact** drift check needs no work. A
+   staff account takes its organization from its *primary* role, so as
+   assignable-only roles those two had to ride on `primaryRole: "user"`, which is
+   a learner: no organization, not staff, and therefore unable to create
+   anything.
+2. **Permissions — two new strings**, `question:moderate` (change anyone's
+   question, reject your own, verify your own) and `question:review-audit` (see
+   the whole team's review history). Both are in the `admin` and
+   `organization_admin` defaults. **Neither needs frontend registry work**: the
+   access editor derives its groups from the `resource:action` prefix and
+   `question` is already a known resource. This is the seam-2 case that mirrors
+   itself.
+3. **Endpoints — no new route.** `GET /api/users` and `GET /api/users/stats` are
+   now organization-scoped, every by-id user route 404s outside the caller's
+   organization, and `POST /users` / `PATCH /users/:id/roles` return **400** for
+   a learner primary role carrying a non-empty `assignedRoles`. The frontends
+   needed no change for the scoping: existing callers simply receive a narrower
+   list.
+4. **Copy** — the access editor's "no longer available" branch now reads "This
+   role is set up with the organization and cannot be changed here.", which is
+   what it always meant.
+
+### The one ordering rule that can break a build
+
+**Ship the API first.** `PRIMARY_ROLE_OPTIONS` is checked in `subset` mode, which
+discards values the backend has and the picker omits but fails on a value the
+picker offers and the backend does not. So the API alone passes, and the
+**frontend alone fails**. Note too that `pnpm check:drift` exits 0 when the API
+is unreachable — use `--strict` or `CI=true`, or a green run proves nothing.
+
+**Development databases need a reseed, not a patch** (D9). Existing writers are
+`primaryRole: "user"` + `assignedRoles: ["writer"]` with no organization, and
+after this change they are neither staff nor writers, and unsaveable.
+
+## Recent seam changes (organization provisioning, plans and seats)
+
+Organizations became a thing a superadmin can create, plan, seat and pause. Two
+repos: `psc-archiver-api` and `psc-archiver-admin`. **`psc-archiver-client` is
+untouched and is owed no handoff note** — a learner belongs to no organization
+and the consumer surface is unchanged. Roadmap: phase 2 of
+[psc-archiver-admin/docs/roadmaps/multi-tenant-organization.md](psc-archiver-admin/docs/roadmaps/multi-tenant-organization.md);
+rationale: [decision 0034](psc-archiver-api/doc/decisions/0034-multi-tenant-organizations.md).
+
+1. **Enums — two mirrors moved out of `NOT_MIRRORED`.** `organizationLicenses`
+   and `organizationStatus` had been on `/api/config` since phase 1 with a note
+   in `scripts/drift-manifest.mjs` saying to mirror them "when the organization
+   management page lands". It landed, so `ORGANIZATION_LICENSE` and
+   `ORGANIZATION_STATUS` are now in `src/lib/enums.js` with **exact** drift
+   checks and their `NOT_MIRRORED` entries deleted. No new backend values, so
+   there is no ordering hazard this time.
+2. **Permissions — no new strings.** The whole `organization:*` group was
+   registered in phase 1 and reaches the access editor by itself. What changed is
+   *which route uses which*, and one choice is worth carrying forward: **disable
+   and delete are gated on `organization:delete`, not `organization:update`**,
+   because `update` is an `organization_admin` default and a tenant must not be
+   able to pause itself. The same reasoning gates the admin app's
+   `/organizations` page on `organization:create` rather than `organization:read`.
+3. **Endpoints — seven new, one widened.** `POST /organizations` (provisions the
+   workspace, its one owner and its five default paper series in a call),
+   `GET /organizations`, `GET /organizations/:id`, `PATCH /organizations/:id`,
+   `POST /organizations/:id/disable`, `POST /organizations/:id/restore`,
+   `DELETE /organizations/:id`. `GET /organizations/me` already existed and now
+   also returns `seatsInUse` and `isSystem`. Widened: `GET /api/users` and
+   `GET /api/users/stats` take a **`staffOnly`** flag, ignored whenever `role` is
+   set.
+4. **Copy** — plans are described by what they allow, never by the stored value:
+   "You may sell the papers you create", not "commercial". Seats say what is left
+   and how to free one ("Every seat is taken. Block or remove someone to free
+   one."), never "seat quota exceeded". An organization is **paused**, not
+   "disabled". Full table in `psc-archiver-admin/src/pages/organizations/data/constants.js`.
+
+### Two contract details that catch people out
+
+**A cross-organization read is a 404, not a 403.** Every by-id organization and
+user route answers "belongs to someone else" identically to "does not exist".
+A 403 would confirm that an id names a real customer, turning the endpoint into
+a directory of who buys the product. Frontends must not treat 404 here as a bug.
+
+**A 403 on `GET /users/me` ends the session.** Every account may read its own
+profile, so a 403 there is never an ordinary permission refusal: it is
+`OrganizationStatusGuard` turning away a paused organization. That guard is what
+makes pausing reach a browser tab that is already open — tokens last seven days,
+carry no organization status, and there is no refresh flow or denylist. It caches
+each organization's status for **30 seconds**, so a pause binds within half a
+minute rather than within a week. The admin app clears the session and toasts on
+that 403; any future client must do the same or it will sit on a dead session.
 
 ## Deployment — the infrastructure repo, and why the origin model flips
 
-Deployment config lives in a **separate sibling repo, `psc-archiver-deploy`** (next to the app repos). It holds the compose files, the deploy scripts, and the runbook. Details: [psc-archiver-deploy/README.md](psc-archiver-deploy/README.md) and [psc-archiver-api/doc/08-deployment.md](psc-archiver-api/doc/08-deployment.md). Plan and status: [psc-archiver-admin/docs/roadmaps/deployment-pipeline.md](psc-archiver-admin/docs/roadmaps/deployment-pipeline.md).
+Deployment config lives in a **separate sibling repo, `psc-archiver-deploy`** (next to the app repos, on **`main`**, not `master`). It holds the compose files, the deploy scripts, and the runbook. Details: [psc-archiver-deploy/README.md](psc-archiver-deploy/README.md) and [psc-archiver-api/doc/08-deployment.md](psc-archiver-api/doc/08-deployment.md). Commands to stand a torn-down server back up: [psc-archiver-deploy/QUICKSTART.md](psc-archiver-deploy/QUICKSTART.md). Plan and status: [psc-archiver-admin/docs/roadmaps/deployment-pipeline.md](psc-archiver-admin/docs/roadmaps/deployment-pipeline.md).
+
+### Bootstrapping a database is one command, and it crosses the seam
+
+A fresh database is populated by **`docker compose … --profile seed run --rm seed`**, the same profile and the same `scripts/bootstrap.mjs` in both `compose.local.yml` and `compose.prod.yml`. It does four things in an order that is load-bearing, and each one is owned by a different part of the system:
+
+| # | What | Owned by |
+|---|---|---|
+| 1 | **System organization**, then the **superadmin**, at fixed `_id`s, written straight to MongoDB | `psc-archiver-api/src/scripts/seed-superadmin.ts` |
+| 2 | Wait for `GET /api/readyz` | the api container |
+| 3 | **Taxonomy**, only when the database has none | `POST /api/taxonomy/seed` |
+| 4 | 163 exam papers, 14,868 questions | `POST /api/seeder/import` |
+
+Three things about it are worth carrying across the seam:
+
+- **The organization must exist before the superadmin.** Since [0034](psc-archiver-api/doc/decisions/0034-multi-tenant-organizations.md)/[0035](psc-archiver-api/doc/decisions/0035-consolidated-user-role-model.md) every staff role requires an `organizationId`, so the script writes the System organization first. It duplicates `OrganizationsService.seedSystemOrganization` deliberately (no Nest container on a bare Mongoose connection), which means **both copies must keep writing the same fields** — a divergence over `licenceNotice` already happened once.
+- **Steps 3 and 4 are HTTP, but never leave the box.** They go to `api:5000` over the compose network. Nobody signs in or POSTs the seeder by hand any more, which was the previous procedure and was easy to aim at the wrong host.
+- **Taxonomy is the one non-idempotent piece, and the guard lives in the deploy repo, not the API.** `POST /api/taxonomy/seed` mints a new `TaxonomyVersion` per call and activates it, so `bootstrap.mjs` reads `GET /api/taxonomy/versions` first and seeds only into an empty list (`SEED_TAXONOMY_FORCE=1` overrides). **That leaves every other caller carrying the trap** — Swagger, or a future admin-app button. A frontend that ever grows a "reseed taxonomy" action must not assume the endpoint is safe to call twice. Tracked in [psc-archiver-api/doc/07-future-work.md](psc-archiver-api/doc/07-future-work.md).
+
+Production runs on MongoDB Atlas and has no `mongo` container, so `down -v` clears nothing and **nothing in the deploy repo deletes data**. Starting a fresh MVP round means emptying the database in Atlas by hand first.
 
 ### Two frontends, two origins
 
@@ -450,10 +577,12 @@ Both dev origins must be named in the API's `CLIENT_URL`, or unset it and take t
 ```bash
 cd psc-archiver-deploy
 docker compose -f compose.local.yml up -d --build
-docker compose -f compose.local.yml --profile seed run --rm seed   # first run only
+docker compose -f compose.local.yml --profile seed run --rm seed   # safe to re-run
 # → http://localhost:8080  (admin)
 # → http://localhost:8081  (learner)
 ```
+
+The seed step runs `scripts/bootstrap.mjs` inside the api image and covers the System organization, the superadmin, the taxonomy and the whole paper corpus. It is idempotent, so re-running it is how you pick up a correction to the seed data, not a first-run-only step. The **server uses the identical profile** against `compose.prod.yml`, so this rehearses the real thing rather than a local approximation.
 
 Use this when a change involves the `/api` proxy, the containers, or anything a dev run cannot reproduce. It now serves **both** frontends, against the same api container — mirroring production, where the only difference is Traefik and TLS in front.
 

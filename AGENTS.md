@@ -7,7 +7,7 @@ Pointer file for AI coding agents (Codex, Claude Code, etc.) launched from the *
 | **psc-archiver-api** | Backend — NestJS 11 + MongoDB. Owns the data model, auth, RBAC, and the `/api/config` registry. | [psc-archiver-api/AGENTS.md](psc-archiver-api/AGENTS.md) |
 | **psc-archiver-admin** | Staff frontend — Vite + React/JSX. The back office. Ships to `archiver.trynbuild.com`. | [psc-archiver-admin/AGENTS.md](psc-archiver-admin/AGENTS.md) |
 | **psc-archiver-client** | Learner frontend — Vite + React/JSX, mobile-first. Reads only the `/papers/*` consumer surface. Ships to `learner.trynbuild.com`. Branch is **`main`**, not `master`. | [psc-archiver-client/AGENTS.md](psc-archiver-client/AGENTS.md) |
-| **psc-archiver-deploy** | Infrastructure — Docker Compose, Traefik, deploy/rollback scripts, and the local prod-parity stack. | [psc-archiver-deploy/README.md](psc-archiver-deploy/README.md) |
+| **psc-archiver-deploy** | Infrastructure — Docker Compose, Traefik, deploy/rollback scripts, and the local prod-parity stack. Branch is **`main`**, not `master`. Bringing a server up: [QUICKSTART.md](psc-archiver-deploy/QUICKSTART.md). | [psc-archiver-deploy/README.md](psc-archiver-deploy/README.md) |
 
 ## How to work here
 
