@@ -121,7 +121,7 @@ If you can only touch one repo in this session, do your side **and** leave a tag
 | `published` | `archived` only. Never back to `draft`, except the exam paper reopen below. |
 | `archived` | `published` (republish); deleted; `draft` for a **superadmin only** |
 | deleted | restore (prior status); purge (superadmin, deleted papers only) |
-| `published` or `archived`, **`exam_paper` only** | `draft` in one step, with `exam-paper:reopen` (the `admin` role by default; superadmin implicit). [0041](psc-archiver-api/doc/decisions/0041-exam-paper-reopen.md); not built until Phase 5 of [the admin roadmap](psc-archiver-admin/docs/roadmaps/question-bank-paper-split-and-request-hygiene.md) |
+| `published` or `archived`, **`exam_paper` only** | `draft` in one step, with `exam-paper:reopen` (the `admin` role by default; superadmin implicit). [0041](psc-archiver-api/doc/decisions/0041-exam-paper-reopen.md); enforced by the API since Phase 5 of [the admin roadmap](psc-archiver-admin/docs/roadmaps/question-bank-paper-split-and-request-hygiene.md), offered in the admin UI from its Phase 6 |
 
 - **Download:** a final copy needs `published` and at least 1 question. A superadmin may download a final copy at any status. A draft offers only the editor's watermarked preview copy. Nobody downloads a paper with 0 questions.
 - **Visibility:** another organization, and every public or shared surface, sees `published` papers only. Archived and deleted papers never appear there.
