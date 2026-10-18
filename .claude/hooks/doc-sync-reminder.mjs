@@ -46,9 +46,9 @@ process.stdin.on("end", () => {
 
   // Paper lifecycle (decision 0040): any code that creates, edits, lists,
   // downloads or changes the status of a paper must stay inside the contract.
-  const lifecycleRule = /exam-paper|paper-builder|\/papers\/|download|question-paper-editor|batch-export/i.test(
-    file,
-  )
+  // Any path naming a paper or a download: exam-paper, paper-builder, papers/,
+  // question-paper-editor, usePaperActions, paperLifecycle, batch-export...
+  const lifecycleRule = /paper|download|batch-export/i.test(file)
     ? " This file touches papers: check the change against the Paper lifecycle contract in INTEGRATION.md (draft-only create, publish needs questions, published -> archived only, final downloads for published papers, published-only visibility, custom paper dates today or later) and go through the lifecycle helper rather than an inline status check."
     : "";
 
