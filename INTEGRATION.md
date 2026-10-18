@@ -110,6 +110,37 @@ If you can only touch one repo in this session, do your side **and** leave a tag
 
 ---
 
+## Paper lifecycle contract
+
+**Every feature that creates, edits, lists, downloads, shares or changes the status of a paper follows these rules, in every repo.** The decision is [0040](psc-archiver-api/doc/decisions/0040-paper-lifecycle-rules.md); the work to enforce it is phased in [paper-lifecycle-rules.md](psc-archiver-api/doc/roadmaps/paper-lifecycle-rules.md). Until a phase lands, the code may still behave the old way, so check that roadmap's status table before relying on a rule.
+
+| From | Allowed next steps |
+|---|---|
+| (create) | `draft`, always. No status picker on any create form. |
+| `draft` | `published` (needs at least 1 question); deleted |
+| `published` | `archived` only. Never back to `draft`. |
+| `archived` | `published` (republish); deleted; `draft` for a **superadmin only** |
+| deleted | restore (prior status); purge (superadmin, deleted papers only) |
+
+- **Download:** a final copy needs `published` and at least 1 question. A superadmin may download a final copy at any status. A draft offers only the editor's watermarked preview copy. Nobody downloads a paper with 0 questions.
+- **Visibility:** another organization, and every public or shared surface, sees `published` papers only. Archived and deleted papers never appear there.
+- **Editing:** drafts only. A superadmin may edit a paper's details at any status.
+- **Dates:** a `custom_paper`'s date of exam is today or later (Asia/Kolkata) and its year follows the date. An `exam_paper` (superadmin-only original) may carry any past date, year 2021 to the current year.
+- **Naming:** "Exam paper" means an original PSC paper; "Custom paper" means one built in Paper Builder, and an exam copy is a custom paper. Titles and actions follow `examType`, which never changes after create.
+- **One helper per side:** `psc-archiver-api/src/common/paper-lifecycle.ts` and its mirror `psc-archiver-admin/src/lib/paperLifecycle.js`. Ask the helper; never compare `status` inline.
+
+### Before building a feature that touches papers
+
+Answer these in the feature's roadmap or PR before writing code:
+
+1. **Which statuses may see or do this?** Does it stay inside the table above?
+2. **What happens with 0 questions?**
+3. **What does another organization, or a learner, see?** Published only?
+4. **Does a superadmin get a bypass,** and is it one the contract already grants?
+5. **Does it go through the lifecycle helper** on both sides, with the API as the gate and the UI only hiding what the API would refuse?
+
+---
+
 ## The "tagging" handoff workflow
 
 The repos already hand work to each other through cross-repo notes. Formalize it — an agent working in one repo requests work from another by dropping a note the sibling repo's agent will pick up:
@@ -129,7 +160,7 @@ Each note should name: the endpoint(s), the DTO/enum/permission changes, and whi
   - `GET /api/config/permissions` → the **static registry** (what exists, what each role grants by default).
   - `GET /api/users/me/permissions` → the signed-in user's **effective set**. **This is what gates the UI.**
   - `user.permissions` on `GET /users/me` and in the JWT → the raw **override layer** (bare grants, `!`-prefixed revokes). Empty for most users. Gating on it hides every action a writer or reviewer owns, because their access comes from role defaults. The frontend edits this field in the access editor and gates on nothing else.
-- **Guard style on the backend is mostly `@RequirePermissions` now.** Users, Questions, AiTagging, ExamPapers, and Taxonomy routes use permission gates; a few status-only routes (e.g. paper publish via `PATCH { status }`) still do not require `EXAM_PAPER_PUBLISH`. The remaining unenforced registered permissions are for future modules (`REPORTS_EXPORT`, `AUDIT_LOG_READ`, `LEAD_*`). See [psc-archiver-api/doc/07-future-work.md](psc-archiver-api/doc/07-future-work.md).
+- **Guard style on the backend is mostly `@RequirePermissions` now.** Users, Questions, AiTagging, ExamPapers, and Taxonomy routes use permission gates; a few status-only routes (e.g. paper publish via `PATCH { status }`) still do not require `EXAM_PAPER_PUBLISH` (*superseded by [0040](psc-archiver-api/doc/decisions/0040-paper-lifecycle-rules.md): status moves to `POST /exam-papers/:id/status` behind `exam-paper:publish`, see the Paper lifecycle contract above*). The remaining unenforced registered permissions are for future modules (`REPORTS_EXPORT`, `AUDIT_LOG_READ`, `LEAD_*`). See [psc-archiver-api/doc/07-future-work.md](psc-archiver-api/doc/07-future-work.md).
 - **`SETTINGS_MANAGE` is granted but gates nothing, and reading it as "may save" is now wrong.** All three `PUT /api/app-settings/*` routes are `@Roles(superadmin)`: `AppSetting` carries no `organizationId`, so one row backs every organization and a tenant writing it changed what every other tenant's papers print. The permission is still in the `admin` and `organization_admin` defaults, so `canAccess({ anyPerm: ["settings:manage"] })` answers **yes** and the request comes back **403**. Gate on `roles: ["superadmin"]` until those documents have owners. See [psc-archiver-api/doc/decisions/0036](psc-archiver-api/doc/decisions/0036-global-app-settings-are-superadmin-only.md).
 - **A cross-organization request is a 404, and a 403 means something else entirely.** Every scoped loader answers "not found" for another organization's document, on purpose, so an error cannot confirm which ids are real; a foreign id arriving inside a request **body** answers 400. That leaves 403 meaning "this account cannot do this at all" (the two global permission/role guards) or "its organization is out of service" (`OrganizationStatusGuard`). A frontend writing copy for a tenancy refusal is writing it for a 404. The full audit is [psc-archiver-api/doc/09-tenancy-audit.md](psc-archiver-api/doc/09-tenancy-audit.md), and `dist/scripts/check-organization-isolation.js` is the 65-probe script that keeps checking it.
 - **Backend 403 messages are not all fit to show.** Most are written for a reader ("Your organization is not active at the moment…"), but both global guards throw `Insufficient permissions`, and the grant-cap refusal ends with a list of raw `resource:action` keys. The admin app's [xior interceptor](psc-archiver-admin/src/services/configs/xior.js) rewrites those three cases to plain copy and passes the rest through; `psc-archiver-client` does **not** yet, and should when it next grows a surface that can be refused.

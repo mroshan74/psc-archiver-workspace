@@ -75,6 +75,17 @@ Both frontends gate this with **`pnpm check:copy`** (`scripts/check-copy.mjs`, o
 
 Per-repo detail: [psc-archiver-client/docs/arch/12-user-facing-copy.md](psc-archiver-client/docs/arch/12-user-facing-copy.md) (learner voice), [psc-archiver-admin/docs/arch/12-user-facing-copy.md](psc-archiver-admin/docs/arch/12-user-facing-copy.md) (staff voice), and seam 4 in [INTEGRATION.md](INTEGRATION.md).
 
+## Paper lifecycle: one set of rules, in every repo
+
+**Any feature that creates, edits, lists, downloads, shares or changes the status of a paper must follow the [Paper lifecycle contract in INTEGRATION.md](INTEGRATION.md#paper-lifecycle-contract), and answer its "Before building a feature that touches papers" checklist before code is written.** In short:
+
+- A paper is always created as a draft.
+- Draft → published needs at least 1 question. Published → archived only, never back to draft. Archived → republish or delete; archived → draft is superadmin only.
+- Only published papers with questions download as a final copy (a superadmin may download any status), and only published papers are visible to another organization or a learner.
+- Editing is for drafts. A custom paper's date of exam is today or later; an original exam paper may carry a past date.
+
+The API enforces it (decision [0040](psc-archiver-api/doc/decisions/0040-paper-lifecycle-rules.md)); the admin app mirrors it in one helper and only hides what the API would refuse. Rollout status: [paper-lifecycle-rules.md](psc-archiver-api/doc/roadmaps/paper-lifecycle-rules.md).
+
 ## Planning and roadmaps
 
 **Plan mode produces a roadmap, and roadmaps advance one phase at a time.** A plan made in plan mode is written into the owning repo as **`docs/roadmaps/<feature>.md`** (`doc/roadmaps/` in the API) — phases of `- [ ]` checklist tasks with explicit exit criteria per phase, not left as a chat reply. When implementing: do the **one** phase or task that was asked for, tick its boxes in the roadmap, report what was done, and **stop**. Do not continue into the next phase unless explicitly told to; a request that names several phases or tasks overrides this for those only. Tick a box only when the work is actually done **and** its docs are updated in the same change.

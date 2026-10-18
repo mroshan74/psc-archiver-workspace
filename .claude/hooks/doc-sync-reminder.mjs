@@ -1,5 +1,6 @@
 // PostToolUse hook (Write|Edit): reminds the agent to apply the repo's
-// "Documentation sync rule" whenever a source file changes, and — in the two
+// "Documentation sync rule" whenever a source file changes, the paper lifecycle
+// contract (decision 0040) when the file touches papers, and — in the two
 // frontends — the no-em-dash copy rule that `pnpm check:copy` enforces.
 // Reads the hook payload JSON on stdin; emits additionalContext JSON on stdout.
 //
@@ -43,12 +44,20 @@ process.stdin.on("end", () => {
     return;
   }
 
+  // Paper lifecycle (decision 0040): any code that creates, edits, lists,
+  // downloads or changes the status of a paper must stay inside the contract.
+  const lifecycleRule = /exam-paper|paper-builder|\/papers\/|download|question-paper-editor|batch-export/i.test(
+    file,
+  )
+    ? " This file touches papers: check the change against the Paper lifecycle contract in INTEGRATION.md (draft-only create, publish needs questions, published -> archived only, final downloads for published papers, published-only visibility, custom paper dates today or later) and go through the lifecycle helper rather than an inline status check."
+    : "";
+
   console.log(
     JSON.stringify({
       suppressOutput: true,
       hookSpecificOutput: {
         hookEventName: "PostToolUse",
-        additionalContext: `Doc-sync reminder: ${file} changed. Per the Documentation sync rule in CLAUDE.md, update the matching documentation in this same change (${docs}) — or note explicitly that no doc covers this change.${copyRule}`,
+        additionalContext: `Doc-sync reminder: ${file} changed. Per the Documentation sync rule in CLAUDE.md, update the matching documentation in this same change (${docs}) — or note explicitly that no doc covers this change.${copyRule}${lifecycleRule}`,
       },
     }),
   );
