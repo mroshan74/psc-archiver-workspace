@@ -118,15 +118,17 @@ If you can only touch one repo in this session, do your side **and** leave a tag
 |---|---|
 | (create) | `draft`, always. No status picker on any create form. |
 | `draft` | `published` (needs at least 1 question); deleted |
-| `published` | `archived` only. Never back to `draft`. |
+| `published` | `archived` only. Never back to `draft`, except the exam paper reopen below. |
 | `archived` | `published` (republish); deleted; `draft` for a **superadmin only** |
 | deleted | restore (prior status); purge (superadmin, deleted papers only) |
+| `published` or `archived`, **`exam_paper` only** | `draft` in one step, with `exam-paper:reopen` (the `admin` role by default; superadmin implicit). [0041](psc-archiver-api/doc/decisions/0041-exam-paper-reopen.md); not built until Phase 5 of [the admin roadmap](psc-archiver-admin/docs/roadmaps/question-bank-paper-split-and-request-hygiene.md) |
 
 - **Download:** a final copy needs `published` and at least 1 question. A superadmin may download a final copy at any status. A draft offers only the editor's watermarked preview copy. Nobody downloads a paper with 0 questions.
 - **Visibility:** another organization, and every public or shared surface, sees `published` papers only. Archived and deleted papers never appear there.
 - **Editing:** drafts only. A superadmin may edit a paper's details at any status.
 - **Dates:** a `custom_paper`'s date of exam is today or later (Asia/Kolkata) and its year follows the date. An `exam_paper` (superadmin-only original) may carry any past date, year 2021 to the current year.
 - **Naming:** "Exam paper" means an original PSC paper; "Custom paper" means one built in Paper Builder, and an exam copy is a custom paper. Titles and actions follow `examType`, which never changes after create.
+- **Surfaces split by type:** the admin's Exam Papers page lists `exam_paper` only, and its create route (`POST /exam-papers`) creates nothing else. Custom papers are listed on Question Bank → Custom Papers and in Paper Builder, and are created only by generate, sample or duplicate. The learner list is `exam_paper` only, as before. Rolled out by [the admin roadmap](psc-archiver-admin/docs/roadmaps/question-bank-paper-split-and-request-hygiene.md) (Phases 5 and 7).
 - **One helper per side:** `psc-archiver-api/src/common/paper-lifecycle.ts` and its mirror `psc-archiver-admin/src/lib/paperLifecycle.js`. Ask the helper; never compare `status` inline.
 
 ### Before building a feature that touches papers

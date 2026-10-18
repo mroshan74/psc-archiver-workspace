@@ -81,6 +81,8 @@ Per-repo detail: [psc-archiver-client/docs/arch/12-user-facing-copy.md](psc-arch
 
 - A paper is always created as a draft.
 - Draft → published needs at least 1 question. Published → archived only, never back to draft. Archived → republish or delete; archived → draft is superadmin only.
+- The one exception: an original exam paper (`exam_paper`) moves back to draft in one step from published or archived, with `exam-paper:reopen` (admin by default, superadmin implicitly). Custom papers never do. Decision [0041](psc-archiver-api/doc/decisions/0041-exam-paper-reopen.md).
+- Exam Papers lists original exam papers only, and custom papers have their own Custom Papers page.
 - Only published papers with questions download as a final copy (a superadmin may download any status), and only published papers are visible to another organization or a learner.
 - Editing is for drafts. A custom paper's date of exam is today or later; an original exam paper may carry a past date.
 
