@@ -143,6 +143,28 @@ Answer these in the feature's roadmap or PR before writing code:
 
 ---
 
+## Question bank contract
+
+**Every feature that creates, lists, filters, verifies, copies or reports on questions follows these rules, in every repo.** The decisions are [0042](psc-archiver-api/doc/decisions/0042-question-banks-and-verification-scope.md) (two banks, verification scope) and [0043](psc-archiver-api/doc/decisions/0043-question-promotion.md) (promotion); the work is phased in [question-bank-segregation.md](psc-archiver-api/doc/roadmaps/question-bank-segregation.md). Until a phase lands, the code may still behave the old way, so check that roadmap's status table before relying on a rule.
+
+- **Two banks, one field.** Every `Question` carries `bank`: `pyq` (a question of an original PSC paper) or `external` (everything else: standalone questions, custom-paper questions, promoted copies). The API derives it from the linked paper's `examType` on every write and never accepts it from a client; `PATCH` refuses a `source` change that would flip it. Only the System organization owns `exam_paper` rows, so a tenant can never create a `pyq` row.
+- **Nothing external bleeds into PYQ.** Analytics, AI-tagging exports and every future feature inferred from previous-year questions read `bank: pyq`, never `source.type`. A custom paper may still reference `pyq` rows.
+- **Verification has a scope.** `quality.verifiedScope` is `internal` (verified by the vendor's staff, the System organization) or `external` (verified by a customer organization). The API sets it from the verifier's organization. "Trusted by the vendor" is `isVerified && verifiedScope === 'internal'`. The admin shows internal as "Verified" and external as "Checked by organization".
+- **Promotion copies, never mutates.** `POST /questions/:id/promote` (`question:promote`, the `admin` role by default) creates a System-owned copy with `bank: external`, `status: review` and `origin { questionId, organizationId, copiedAt, copiedBy }`. The origin row is untouched; a second promotion answers 409. `POST /exam-papers/:id/promote` does the same for a custom paper and its questions.
+- **Offer and browse.** A tenant may offer a published external question (`POST /questions/:id/offer`, stamps `sharing { offeredAt, offeredBy }`). The vendor's curators list every organization's published external rows at `GET /questions/submissions` (`question:promote`), offered rows first. This is the product's one deliberate cross-organization read; it is its own route, never a flag on `GET /questions`.
+- **Surfaces split by bank.** The admin's Question Bank is two groups: Previous Year Questions (Questions, My Questions, Add Question, Review, Exam Papers) and External (the same, plus Custom Papers and the vendor's Submissions). Lists send `bank=`; the edit route is shared. A customer's My Workspace is always external. The learner app is untouched.
+- **Seams.** Enums `questionBank` and `questionVerificationScope` are published by `/api/config` and mirrored in the admin's `src/lib/enums.js` (`QUESTION_BANK`, `QUESTION_VERIFICATION_SCOPE`); the client lists both as `NOT_MIRRORED`. Response fields `bank`, `quality.verifiedScope`, `origin` and `sharing` are admin-only and never reach `/api/papers/*`. **Deploy order:** the API's config change ships before the admin's drift manifest, because `check:drift` flags unlisted keys.
+
+### Before building a feature that touches questions
+
+1. **Which bank does it read or write?** Does it send or derive `bank`, never `source.type`?
+2. **Can it create or move a row into `pyq`?** Only through an `exam_paper`, and only the API decides.
+3. **Which verification does it trust?** Vendor-only features need `internal`; an organization's own tooling may accept `external`.
+4. **Does it read another organization's rows?** Only the submissions route may, and only behind `question:promote`.
+5. **Does it write to another organization's row?** Never. Copy with `origin` instead.
+
+---
+
 ## The "tagging" handoff workflow
 
 The repos already hand work to each other through cross-repo notes. Formalize it — an agent working in one repo requests work from another by dropping a note the sibling repo's agent will pick up:
@@ -163,8 +185,8 @@ Each note should name: the endpoint(s), the DTO/enum/permission changes, and whi
   - `GET /api/users/me/permissions` → the signed-in user's **effective set**. **This is what gates the UI.**
   - `user.permissions` on `GET /users/me` and in the JWT → the raw **override layer** (bare grants, `!`-prefixed revokes). Empty for most users. Gating on it hides every action a writer or reviewer owns, because their access comes from role defaults. The frontend edits this field in the access editor and gates on nothing else.
 - **Guard style on the backend is mostly `@RequirePermissions` now.** Users, Questions, AiTagging, ExamPapers, and Taxonomy routes use permission gates; paper status moves through `POST /exam-papers/:id/status` behind `EXAM_PAPER_PUBLISH`, and `PATCH` refuses `status` ([0040](psc-archiver-api/doc/decisions/0040-paper-lifecycle-rules.md), see the Paper lifecycle contract above). The remaining unenforced registered permissions are for future modules (`REPORTS_EXPORT`, `AUDIT_LOG_READ`, `LEAD_*`). See [psc-archiver-api/doc/07-future-work.md](psc-archiver-api/doc/07-future-work.md).
-- **`SETTINGS_MANAGE` is granted but gates nothing, and reading it as "may save" is now wrong.** All three `PUT /api/app-settings/*` routes are `@Roles(superadmin)`: `AppSetting` carries no `organizationId`, so one row backs every organization and a tenant writing it changed what every other tenant's papers print. The permission is still in the `admin` and `organization_admin` defaults, so `canAccess({ anyPerm: ["settings:manage"] })` answers **yes** and the request comes back **403**. Gate on `roles: ["superadmin"]` until those documents have owners. See [psc-archiver-api/doc/decisions/0036](psc-archiver-api/doc/decisions/0036-global-app-settings-are-superadmin-only.md).
-- **A cross-organization request is a 404, and a 403 means something else entirely.** Every scoped loader answers "not found" for another organization's document, on purpose, so an error cannot confirm which ids are real; a foreign id arriving inside a request **body** answers 400. That leaves 403 meaning "this account cannot do this at all" (the two global permission/role guards) or "its organization is out of service" (`OrganizationStatusGuard`). A frontend writing copy for a tenancy refusal is writing it for a 404. The full audit is [psc-archiver-api/doc/09-tenancy-audit.md](psc-archiver-api/doc/09-tenancy-audit.md), and `dist/scripts/check-organization-isolation.js` is the 65-probe script that keeps checking it.
+- **`SETTINGS_MANAGE` is live again, on exactly one key.** `PUT` and `DELETE /api/app-settings/paper-defaults` carry it (decision [0037](psc-archiver-api/doc/decisions/0037-organization-manager-and-owner-bindings.md), R9): that row gained an `organizationId`, and neither route can address an organization other than the caller's, so an organization admin saving it changes only their own workspace's papers. **`paper-export` and `export-limits` are still `@Roles(superadmin)` and must not be changed to match** — they carry no owner, so one row still backs every organization ([0036](psc-archiver-api/doc/decisions/0036-global-app-settings-are-superadmin-only.md)). In the admin app that means Paper defaults gates on `anyPerm: ["settings:manage"]` while Paper exports and Download limits gate on `roles: ["superadmin"]`.
+- **A cross-organization request is a 404, and a 403 means something else entirely.** Every scoped loader answers "not found" for another organization's document, on purpose, so an error cannot confirm which ids are real; a foreign id arriving inside a request **body** answers 400. That leaves 403 meaning "this account cannot do this at all" (the two global permission/role guards) or "its organization is out of service" (`OrganizationStatusGuard`). A frontend writing copy for a tenancy refusal is writing it for a 404. The full audit is [psc-archiver-api/doc/09-tenancy-audit.md](psc-archiver-api/doc/09-tenancy-audit.md), and `dist/scripts/check-organization-isolation.js` is the 71-probe script that keeps checking it.
 - **Backend 403 messages are not all fit to show.** Most are written for a reader ("Your organization is not active at the moment…"), but both global guards throw `Insufficient permissions`, and the grant-cap refusal ends with a list of raw `resource:action` keys. The admin app's [xior interceptor](psc-archiver-admin/src/services/configs/xior.js) rewrites those three cases to plain copy and passes the rest through; `psc-archiver-client` does **not** yet, and should when it next grows a surface that can be refused.
 - **Auth is plaintext-by-default + `mustChangePassword`.** Passwords are stored plaintext until the user changes them; only `POST /api/users/me/change-password` hashes. The login response carries `mustChangePassword`; the JWT does not. Frontend must honor the first-login change-password flow.
 - **Admin URLs use the Mongo `_id`** (the `id` virtual / ObjectId hex), e.g. `GET /api/users/:id` — not `shareId`/`registrationId`.
@@ -336,9 +358,9 @@ The Consumer Download MVP added a **second frontend** and the API surface behind
 
 | Route | Gate | Notes |
 |---|---|---|
-| `POST /api/auth/mobile/start` | `@Public()` | Returns `isRegistered` — branch on **this**, not on `register`'s copy |
-| `POST /api/auth/mobile/register` | `@Public()` | Creates the account; returns the same shape as `start` |
-| `POST /api/auth/mobile/verify` | `@Public()` | Calls `login()` verbatim — one token shape for staff and learners |
+| `POST /api/auth/mobile/start` | `@Public()` | Returns `isRegistered` — branch on **this**, not on `register`'s copy. Sends a code **only for a known number** |
+| `POST /api/auth/mobile/register` | `@Public()` | Holds the profile on the OTP challenge and sends the code; returns the same shape as `start`. **Creates no account** |
+| `POST /api/auth/mobile/verify` | `@Public()` | Creates the account from the held profile when this was a sign-up, then calls `login()` verbatim — one token shape for staff and learners |
 | `POST /api/auth/mobile/resend` | `@Public()` | |
 | `GET /api/papers/published` | `@Public()` | Learner list. Fixes `examType` to `exam_paper` rather than inheriting the admin default |
 | `GET /api/papers/:id` | `@Public()` | Summary for the shared link **before** sign-in. No questions, no answers |
@@ -522,6 +544,91 @@ carry no organization status, and there is no refresh flow or denylist. It cache
 each organization's status for **30 seconds**, so a pause binds within half a
 minute rather than within a week. The admin app clears the session and toasts on
 that 403; any future client must do the same or it will sit on a dead session.
+
+## Recent seam changes (the licence line names the organization)
+
+**The first time tenancy reaches `psc-archiver-client`.** D21 said that repo needed no
+change, and that held until the licence line stopped naming a person. All three repos.
+Roadmap: phase 6 of
+[psc-archiver-admin/docs/roadmaps/multi-tenant-refinements.md](psc-archiver-admin/docs/roadmaps/multi-tenant-refinements.md);
+rationale: [decision 0037](psc-archiver-api/doc/decisions/0037-organization-manager-and-owner-bindings.md), R8.
+
+**The defect it closes: the same paper printed two different notices.** The admin exporter
+read the **global** `paper-export.licence`; the learner app read the **per-organization**
+notice the backend resolves. So a `community` workspace's mandatory attribution appeared on
+the learner's copy and not on the back office's, which is the one place D24 says a licence
+is machine-enforced.
+
+1. **Enums** — none. Nothing to mirror, and `check:drift` is unaffected.
+2. **Permissions** — none. The notice is read through routes that already existed.
+3. **Endpoints — one widened, one gained a field.**
+   `GET /exam-papers/:id/editor-document` now answers `{ data, licence, licensedTo }`, both
+   resolved from **the paper's owning organization**. They are siblings of `data`, not
+   fields inside it: they are still true when a paper has no editor document, and
+   `data.settings` round-trips through the `PUT`, so a licence inside it would be a term a
+   client could rewrite. `GET /papers/:id/render-document` gained `licensedTo` beside the
+   `licence` it already carried.
+4. **Copy** — `{customer}` now resolves to the organization's printed name
+   (`branding.displayName`, else its registered name) and to nothing else. The per-paper and
+   per-default "Prepared for" inputs are gone from both Watermark forms, and
+   `traceWatermark.customerName` is gone from both `defaultPaper.js`. Two admin strings that
+   still said "not for redistribution" now say **"not for resale"**, which is what D24
+   settled: every licence may distribute, only resale varies.
+
+### Three things to know before touching this
+
+**`licenceLine.js` is byte-identical in both frontends and nothing enforces it.** A change
+applied to one and not the other means the same paper prints differently depending on who
+downloaded it, which is the exact bug this work closed. Both copies keep the dash character
+class in `resolveLicenceLine` and both stay named in their repo's `check-copy.mjs`
+allowlist: those dashes are a regex, not copy.
+
+**`loadEditorState` is the single path every admin export goes through** — the editor, the
+row downloads and the batch. That is what made one fix cover all three, and it is why the
+licence hangs off the editor document rather than off a hook a caller chooses.
+
+**A batch cover prints a licence only when the whole bundle agrees on one.** A batch can mix
+a tenant's own papers with papers from the shared archive, which have different owners and
+different terms. The cover speaks for everything behind it, so it now drops the block rather
+than print the first paper's notice across somebody else's work; each paper in the body
+still carries its own.
+
+## Recent seam changes (a customer team is an owner and members)
+
+The first customer asked for no roles and no permissions on their screens. Two repos:
+`psc-archiver-api` and `psc-archiver-admin`; `psc-archiver-client` is untouched and is
+owed no handoff note. Roadmap:
+[psc-archiver-admin/docs/roadmaps/first-client-simplification.md](psc-archiver-admin/docs/roadmaps/first-client-simplification.md);
+rationale: [decision 0039](psc-archiver-api/doc/decisions/0039-tenant-member-role-and-hidden-access-editor.md).
+
+1. **Enums — `primaryRoles` gained `member`.** A customer organization's one non-owner
+   role: the owner's content permissions with none of the administrative ones. Mirrored in
+   the admin's `src/pages/user-management/data/constants.js` (`ROLE_META`,
+   `PRIMARY_ROLE_OPTIONS`, `ROLE_FILTER_OPTIONS`, `STAFF_PRIMARY_ROLES`). `assignableRoles`
+   is unchanged: a member never carries extra roles.
+2. **Permissions — no new strings.** `member` is one more entry in `roleDefaults`, which
+   the access editor already derives. What changed is **who is shown the machinery**: the
+   admin app gates the customer-facing simplifications on
+   `useIsVendorWorkspace()` (`useMyOrganization().isSystemOrganization`), never on a role
+   name or a permission. A customer owner still *holds* `user:manage-roles`; they are not
+   shown an editor for it.
+3. **Endpoints — no new route; three behaviours.** `POST /users` defaults a missing
+   `roleProfiles.primaryRole` to `member` when the caller is in a customer organization
+   (still a learner for the vendor). `PATCH /users/:id`, `DELETE /users/:id` and
+   `POST /users/:id/reset-password` now carry the role ceiling, so a non-superadmin acting
+   on the owner gets a 403, and `status: "blocked"` on your own account is a 403 with
+   "Cannot block your own account". A paper may be assigned to a member.
+4. **Copy** — a customer sees "person", "owner", "member", "blocked"; never "role",
+   "permission" or "access". The vendor's screens are unchanged.
+
+### The ordering rule, again
+
+**Ship the API first**, for the same two reasons as the consolidated-role change: the
+admin's `pnpm check:drift` checks `PRIMARY_ROLE_OPTIONS` in subset mode, so the API alone
+passes and the frontend alone fails; and the admin's own `STAFF_PRIMARY_ROLES` gates
+sign-in, so a member created before the admin change lands cannot sign in at all. Existing
+customer writers, reviewers and managers are re-roled once by
+`pnpm run migrate:tenant-members -- --apply` in the API repo (dry run without the flag).
 
 ## Deployment — the infrastructure repo, and why the origin model flips
 
