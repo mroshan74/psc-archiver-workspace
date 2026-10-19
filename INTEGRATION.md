@@ -165,7 +165,7 @@ Answer these in the feature's roadmap or PR before writing code:
 
 ### Vendor workspace seams (0044, not yet built)
 
-Carried by [vendor-workspace-and-shared-library.md](psc-archiver-api/doc/roadmaps/vendor-workspace-and-shared-library.md). `GET /exam-papers` always answers `organization { id, name }`; `GET /questions` answers it with `includeOrganization=true`; `GET /exam-papers/stats` and `GET /questions/stats` accept `organizationId`; `organizationScope=own` and `system` narrow a superadmin to the System organization. None of these reach `/api/papers/*`. **Deploy order: the API first.** The admin's My Workspace sends `organizationScope=own`, which an old API ignores for a superadmin, so until the API build carrying 0044 is live a superadmin's My Workspace would list every organization.
+Carried by [vendor-workspace-and-shared-library.md](psc-archiver-api/doc/roadmaps/vendor-workspace-and-shared-library.md). `GET /exam-papers` always answers `organization { id, name }`; `GET /questions` answers it with `includeOrganization=true`; `GET /exam-papers/stats` and `GET /questions/stats` accept `organizationId`; `organizationScope=own` and `system` narrow a superadmin to the System organization, and the enum gained **`others`** (other organizations' published rows only, the vendor's External library; mirrored in the admin's `ORGANIZATION_SCOPE`, unlisted in the client). None of these reach `/api/papers/*`. **Deploy order: the API first.** The admin's My Workspace sends `organizationScope=own`, which an old API ignores for a superadmin, so until the API build carrying 0044 is live a superadmin's My Workspace would list every organization.
 
 ---
 
