@@ -160,9 +160,9 @@ Answer these in the feature's roadmap or PR before writing code:
   - **Move to draft:** a published question goes back with `POST /questions/:id/move-to-draft`, a plain status change that records no reject reason. The flow is published → draft → review → published.
   - **Direct publish stays.** A draft may still be published directly.
   - **Review quick edit:** `PATCH /questions/:id/review-edit` (`question:publish`) corrects the content of a question in `review`, whoever wrote it.
-  - **Source types:** the pickable ones are `current_affairs` and `custom`, published by `/api/config` as `standaloneSourceType`. `exam_paper` stays as the automatic PYQ type.
+  - **Source types:** the pickable ones are `current_affairs` and `custom`, published by `/api/config` as `standaloneSourceType` (mirrored in the admin's `STANDALONE_QUESTION_SOURCE_TYPES`; listed in the client's `NOT_MIRRORED`). `exam_paper` stays as the automatic PYQ type. Built 2026-10-19 (Phase 3).
   - **One helper per side:** `src/common/question-lifecycle.ts` and `src/lib/questionLifecycle.js`.
-  - **Deploy order:** run `migrate:question-source-types` before the narrowed API serves traffic.
+  - **Deploy order:** run `migrate:question-source-types` from the new api image before that api restarts (QUICKSTART has the commands); the old api already accepts `custom`. Then the API ships before the admin, whose `check:drift` expects `standaloneSourceType`.
 
 ### Before building a feature that touches questions
 
