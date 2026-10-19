@@ -155,6 +155,15 @@ Answer these in the feature's roadmap or PR before writing code:
 - **Surfaces split by bank.** The admin's Question Bank is two groups: Previous Year Questions (Questions, My Questions, Add Question, Review, Exam Papers) and External (the same, plus Custom Papers and the vendor's Submissions). Lists send `bank=`; the edit route is shared. A customer's My Workspace is always external. The learner app is untouched.
 - **Seams.** Enums `questionBank` and `questionVerificationScope` are published by `/api/config` and mirrored in the admin's `src/lib/enums.js` (`QUESTION_BANK`, `QUESTION_VERIFICATION_SCOPE`); the client lists both as `NOT_MIRRORED`. Response fields `bank`, `quality.verifiedScope`, `origin` and `sharing` are admin-only and never reach `/api/papers/*`. **Deploy order:** the API's config change ships before the admin's drift manifest, because `check:drift` flags unlisted keys. **And the database must be backfilled once**, right after the API build that carries `bank` is deployed: `pnpm run migrate:question-banks -- --apply` in the API repo (dry run without the flag; on a server, the same script inside the api container, see the deploy QUICKSTART). Until it runs, every list page sends a bank that no existing row carries and shows nothing. Rows created by the new build are stamped on write and need no backfill.
 
+- **Question lifecycle ([0045](psc-archiver-api/doc/decisions/0045-question-edit-lock-and-source-types.md), not built yet; phased in [question-bank-fixes.md](psc-archiver-admin/docs/roadmaps/question-bank-fixes.md)).**
+  - **Editing:** a question's content is editable in `draft` and `review` only. `PATCH` refuses `published` and `archived`.
+  - **Move to draft:** a published question goes back with `POST /questions/:id/move-to-draft`, a plain status change that records no reject reason. The flow is published → draft → review → published.
+  - **Direct publish stays.** A draft may still be published directly.
+  - **Review quick edit:** `PATCH /questions/:id/review-edit` (`question:publish`) corrects the content of a question in `review`, whoever wrote it.
+  - **Source types:** the pickable ones are `current_affairs` and `custom`, published by `/api/config` as `standaloneSourceType`. `exam_paper` stays as the automatic PYQ type.
+  - **One helper per side:** `src/common/question-lifecycle.ts` and `src/lib/questionLifecycle.js`.
+  - **Deploy order:** run `migrate:question-source-types` before the narrowed API serves traffic.
+
 ### Before building a feature that touches questions
 
 1. **Which bank does it read or write?** Does it send or derive `bank`, never `source.type`?
@@ -162,6 +171,7 @@ Answer these in the feature's roadmap or PR before writing code:
 3. **Which verification does it trust?** Vendor-only features need `internal`; an organization's own tooling may accept `external`.
 4. **Does it read another organization's rows?** The vendor's curators (System-organization staff holding `question:promote`, the `admin` default, revocable per account; a superadmin always) read every organization's **published** rows (lists, stats, by id) as a library, and the submissions route stays the promotion queue; nobody, the superadmin included, reads another organization's draft, review, archived or deleted rows. A tenant reads its own rows plus the System bank's published rows, and so does a vendor writer or reviewer. [0044](psc-archiver-api/doc/decisions/0044-vendor-reads-published-writes-own.md).
 5. **Does it write to another organization's row?** Never, and a superadmin is no exception: a foreign write answers 404. Copy with `origin` instead.
+6. **Does it change a question's content?** Only in `draft` or `review`, asked through the question lifecycle helper, never an inline `status` check ([0045](psc-archiver-api/doc/decisions/0045-question-edit-lock-and-source-types.md)).
 
 ### Vendor workspace seams (0044, not yet built)
 
