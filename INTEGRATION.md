@@ -164,6 +164,8 @@ Answer these in the feature's roadmap or PR before writing code:
   - **One helper per side:** `src/common/question-lifecycle.ts` and `src/lib/questionLifecycle.js`.
   - **Deploy order:** run `migrate:question-source-types` from the new api image before that api restarts (QUICKSTART has the commands); the old api already accepts `custom`. Then the API ships before the admin, whose `check:drift` expects `standaloneSourceType`.
 
+- **Question number and option layout are exam-paper facts** (admin rule, 2026-10-19; phased in [question-writer-revamp.md](psc-archiver-admin/docs/roadmaps/question-writer-revamp.md)). The admin asks for `source.questionNumber` and `layouts.optionLayout` only on a question of an original exam paper (`examType: exam_paper`, whose questions carry the `exam_paper` source type). Any other question (custom paper, standalone) saves no number and the API's default layout (`twoColumn`); the paper editor sets layout per item in the paper document and only falls back to the record's value. The API keeps both fields optional and never requires a number for any paper type, so this is a frontend rule with no seam to deploy.
+
 ### Before building a feature that touches questions
 
 1. **Which bank does it read or write?** Does it send or derive `bank`, never `source.type`?
