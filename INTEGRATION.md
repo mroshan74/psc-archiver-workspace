@@ -209,6 +209,23 @@ Carried by [vendor-workspace-and-shared-library.md](psc-archiver-api/doc/roadmap
 5. **Does it change the prompt or the rules?** That is a new taxonomy version or a new prompt-registry entry, never an edit in place.
 6. **Does it apply an AI result?** Through the import path only, conditioned on the exported `updatedAt` and `status ≠ manual`.
 
+## Analytics contract
+
+**Every feature that draws a chart over the question bank follows these rules, in every repo.** The decision is [0053](psc-archiver-api/doc/decisions/0053-analytics-paper-scope-and-per-paper-averages.md); the work is phased in the admin's [analytics-redesign.md](psc-archiver-admin/docs/roadmaps/analytics-redesign.md) (API Phases 1 to 4 and 10, admin Phases 5 to 8). **As of 2026-10-24 only Phase 0 (the docs) is done**; check that roadmap's status table before relying on a route below.
+
+- **Papers first, then questions.** Every `/analytics/*` pipeline resolves the original exam papers in scope (`examType: exam_paper`, not deleted, track per [0049](psc-archiver-api/doc/decisions/0049-technical-track-and-second-attempt.md), level, year range, the caller's readable boundary) and then matches questions on `bank: pyq` plus `source.examId` in that set, never on `source.year`, `source.type` or `classification.examLevels`. The paper count is the denominator of every "per paper" figure.
+- **One shared filter.** `organizationScope`, `track` (default `general`), `examLevel`, `yearFrom`, `yearTo` on every route; the admin sends what its one filter row shows and keeps no per-card filter. No new enum: "All levels" is the absence of `examLevel`. No new permission: everything stays behind `analytics:view`.
+- **The routes.** New: `GET /analytics/overview`, `/analytics/exam-pattern/typical-paper`, `/analytics/exam-pattern/subject-mix-by-level`, `/analytics/exam-pattern/trend`, `/analytics/topics/recurring`, `/analytics/topics/coverage`, `/analytics/classification/health`. Extended: `/analytics/exam-papers/subject-matrix` (takes the filter, answers each paper's level, year, date and question count) and `/analytics/exam-papers/:id/breakdown` (answers the paper's level, year, track and question count). Kept as is: `/analytics/questions/subject-distribution`, which takes track and scope only because it is the **colour key**: the admin gives the first eight subjects of that bank-wide ranking a fixed series token each and every other subject a neutral, so a level or year filter never repaints a subject.
+- **Retired after the admin stops calling them** (API Phase 10, after admin Phase 5 deletes the callers): `/analytics/questions/top-subjects`, `/analytics/questions/subject-summary`, `/analytics/questions/topic-distribution`.
+- **Seams and deploy order.** No enum, permission or copy seam moves; the endpoint seam is `apiPaths` + `analyticsApi.js` on the admin side. API first (additive), then the admin (which drops the three old callers), then the API's retirement phase. Nothing reaches `/api/papers/*`, so the client is untouched.
+
+### Before building a feature that draws over the question bank
+
+1. **Which papers?** Resolve them first through the shared scope helper; never filter questions by a copied paper fact.
+2. **What is the denominator?** A count is about the archive; a figure per paper, or papers-appeared-in over papers-in-scope, is about the exam. Say which one the chart shows.
+3. **Which colour?** A subject's colour comes from the bank-wide key, never from its rank in the current chart.
+4. **Does it need a new route?** Extend the shared filter and add a chart-ready response DTO; do not grow a route into a second shape.
+
 ---
 
 ## The "tagging" handoff workflow
